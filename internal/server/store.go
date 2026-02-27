@@ -69,6 +69,43 @@ type publicCartPayload struct {
 	Summary publicCartSummary `json:"summary"`
 }
 
+type orderItem struct {
+	ProductID      string
+	Name           string
+	PriceCents     int
+	Quantity       int
+	LineTotalCents int
+}
+
+type order struct {
+	ID            string
+	UserID        string
+	Status        string
+	TotalCents    int
+	Items         []orderItem
+	CreatedAt     string
+	UpdatedAt     string
+	CreatedAtUnix int64
+}
+
+type publicOrderItem struct {
+	ProductID      string `json:"product_id"`
+	Name           string `json:"name"`
+	PriceCents     int    `json:"price_cents"`
+	Quantity       int    `json:"quantity"`
+	LineTotalCents int    `json:"line_total_cents"`
+}
+
+type publicOrder struct {
+	ID         string            `json:"id"`
+	UserID     string            `json:"user_id"`
+	Status     string            `json:"status"`
+	TotalCents int               `json:"total_cents"`
+	Items      []publicOrderItem `json:"items"`
+	CreatedAt  string            `json:"created_at"`
+	UpdatedAt  string            `json:"updated_at"`
+}
+
 type refreshSession struct {
 	UserID    string
 	ExpiresAt int64
@@ -80,24 +117,30 @@ type memoryStore struct {
 
 	nextUserID    int
 	nextProductID int
+	nextOrderID   int
 
 	usersByEmail map[string]user
 	usersByID    map[string]user
 
-	productsByID map[string]product
-	refreshByJTI map[string]refreshSession
-	cartsByUser  map[string]map[string]int
+	productsByID   map[string]product
+	refreshByJTI   map[string]refreshSession
+	cartsByUser    map[string]map[string]int
+	ordersByID     map[string]order
+	orderIDsByUser map[string][]string
 }
 
 func newMemoryStore() *memoryStore {
 	return &memoryStore{
-		nextUserID:    1,
-		nextProductID: 1,
-		usersByEmail:  map[string]user{},
-		usersByID:     map[string]user{},
-		productsByID:  map[string]product{},
-		refreshByJTI:  map[string]refreshSession{},
-		cartsByUser:   map[string]map[string]int{},
+		nextUserID:     1,
+		nextProductID:  1,
+		nextOrderID:    1,
+		usersByEmail:   map[string]user{},
+		usersByID:      map[string]user{},
+		productsByID:   map[string]product{},
+		refreshByJTI:   map[string]refreshSession{},
+		cartsByUser:    map[string]map[string]int{},
+		ordersByID:     map[string]order{},
+		orderIDsByUser: map[string][]string{},
 	}
 }
 
@@ -411,6 +454,132 @@ func (s *memoryStore) getCartLocked(userID string) publicCartPayload {
 	}
 }
 
+func (s *memoryStore) createOrderFromCart(userID string) (publicOrder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cart := s.getCartLocked(userID)
+	if cart.Summary.TotalItems == 0 {
+		return publicOrder{}, fmt.Errorf("cart is empty")
+	}
+
+	orderItems := make([]orderItem, 0, len(cart.Items))
+	for _, item := range cart.Items {
+		orderItems = append(orderItems, orderItem{
+			ProductID:      item.ProductID,
+			Name:           item.Name,
+			PriceCents:     item.PriceCents,
+			Quantity:       item.Quantity,
+			LineTotalCents: item.LineTotalCents,
+		})
+	}
+
+	id := fmt.Sprintf("O%04d", s.nextOrderID)
+	s.nextOrderID++
+	now := nowISO()
+	entity := order{
+		ID:            id,
+		UserID:        userID,
+		Status:        "pending_payment",
+		TotalCents:    cart.Summary.TotalAmountCents,
+		Items:         orderItems,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		CreatedAtUnix: time.Now().Unix(),
+	}
+	s.ordersByID[id] = entity
+	s.orderIDsByUser[userID] = append(s.orderIDsByUser[userID], id)
+	delete(s.cartsByUser, userID)
+	return toPublicOrder(entity), nil
+}
+
+func (s *memoryStore) listOrders(actorUserID, actorRole string) []publicOrder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := []publicOrder{}
+	if actorRole == "admin" {
+		for _, item := range s.ordersByID {
+			result = append(result, toPublicOrder(item))
+		}
+		sortPublicOrders(result)
+		return result
+	}
+
+	for _, id := range s.orderIDsByUser[actorUserID] {
+		item, exists := s.ordersByID[id]
+		if !exists {
+			continue
+		}
+		result = append(result, toPublicOrder(item))
+	}
+	sortPublicOrders(result)
+	return result
+}
+
+func (s *memoryStore) getOrder(actorUserID, actorRole, orderID string) (publicOrder, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	item, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicOrder{}, false, nil
+	}
+	if actorRole != "admin" && item.UserID != actorUserID {
+		return publicOrder{}, true, fmt.Errorf("forbidden")
+	}
+	return toPublicOrder(item), true, nil
+}
+
+func (s *memoryStore) transitionOrder(actorUserID, actorRole, orderID, toStatus string) (publicOrder, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	item, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicOrder{}, false, nil
+	}
+	if actorRole != "admin" && item.UserID != actorUserID {
+		return publicOrder{}, true, fmt.Errorf("forbidden")
+	}
+	next := strings.TrimSpace(strings.ToLower(toStatus))
+	if next == "" {
+		return publicOrder{}, true, fmt.Errorf("to_status is required")
+	}
+	if !isValidOrderTransition(item.Status, next) {
+		return publicOrder{}, true, fmt.Errorf("invalid state transition")
+	}
+	item.Status = next
+	item.UpdatedAt = nowISO()
+	s.ordersByID[orderID] = item
+	return toPublicOrder(item), true, nil
+}
+
+func (s *memoryStore) closeExpiredPendingOrders(timeoutSeconds, nowTs int64) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if timeoutSeconds < 0 {
+		timeoutSeconds = 0
+	}
+
+	closed := []string{}
+	for id, item := range s.ordersByID {
+		if item.Status != "pending_payment" {
+			continue
+		}
+		if nowTs-item.CreatedAtUnix < timeoutSeconds {
+			continue
+		}
+		item.Status = "canceled"
+		item.UpdatedAt = nowISO()
+		s.ordersByID[id] = item
+		closed = append(closed, id)
+	}
+	sortStrings(closed)
+	return closed
+}
+
 func toPublicUser(item user) publicUser {
 	return publicUser{
 		ID:        item.ID,
@@ -488,6 +657,61 @@ func sortCartItems(items []publicCartItem) {
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {
 			if items[j].ProductID < items[i].ProductID {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+}
+
+func toPublicOrder(item order) publicOrder {
+	publicItems := make([]publicOrderItem, 0, len(item.Items))
+	for _, line := range item.Items {
+		publicItems = append(publicItems, publicOrderItem{
+			ProductID:      line.ProductID,
+			Name:           line.Name,
+			PriceCents:     line.PriceCents,
+			Quantity:       line.Quantity,
+			LineTotalCents: line.LineTotalCents,
+		})
+	}
+	return publicOrder{
+		ID:         item.ID,
+		UserID:     item.UserID,
+		Status:     item.Status,
+		TotalCents: item.TotalCents,
+		Items:      publicItems,
+		CreatedAt:  item.CreatedAt,
+		UpdatedAt:  item.UpdatedAt,
+	}
+}
+
+func isValidOrderTransition(currentStatus, nextStatus string) bool {
+	if currentStatus == "pending_payment" {
+		return nextStatus == "paid" || nextStatus == "canceled"
+	}
+	if currentStatus == "paid" {
+		return nextStatus == "shipped"
+	}
+	if currentStatus == "shipped" {
+		return nextStatus == "done"
+	}
+	return false
+}
+
+func sortPublicOrders(items []publicOrder) {
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j].ID < items[i].ID {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+}
+
+func sortStrings(items []string) {
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j] < items[i] {
 				items[i], items[j] = items[j], items[i]
 			}
 		}

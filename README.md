@@ -22,6 +22,10 @@ Language: English | [中文](README.zh-CN.md)
   - checkout pricing preview
   - shipping and discount extension points
   - deterministic trace id for same request input
+- A005 baseline:
+  - order creation from cart
+  - strict order state-machine transitions
+  - timeout close endpoint for pending-payment orders
 - health endpoint
 - in-memory store for rapid bootstrap
 - Go unit tests for auth, RBAC, and product catalog behavior
@@ -67,6 +71,11 @@ Environment variables:
 - `PATCH /api/v1/cart/items/{product_id}` (Bearer access token required)
 - `DELETE /api/v1/cart/items/{product_id}` (Bearer access token required)
 - `POST /api/v1/checkout/preview` (Bearer access token required)
+- `POST /api/v1/orders` (Bearer access token required)
+- `GET /api/v1/orders` (Bearer access token required)
+- `GET /api/v1/orders/{id}` (Bearer access token required)
+- `POST /api/v1/orders/{id}/transitions` (Bearer access token required)
+- `POST /api/v1/admin/orders/close-expired` (Bearer admin token required)
 
 ## Run Tests
 

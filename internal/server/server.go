@@ -51,6 +51,14 @@ type checkoutPreviewRequest struct {
 	CouponCode    string `json:"coupon_code"`
 }
 
+type orderTransitionRequest struct {
+	ToStatus string `json:"to_status"`
+}
+
+type closeExpiredOrdersRequest struct {
+	TimeoutSeconds int64 `json:"timeout_seconds"`
+}
+
 type createProductInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -128,6 +136,21 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/checkout/preview":
 		s.handleCheckoutPreview(writer, request)
+		return
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/orders":
+		s.handleCreateOrder(writer, request)
+		return
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/orders":
+		s.handleListOrders(writer, request)
+		return
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/transitions") && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
+		s.handleTransitionOrder(writer, request)
+		return
+	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
+		s.handleGetOrder(writer, request)
+		return
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/admin/orders/close-expired":
+		s.handleCloseExpiredOrders(writer, request)
 		return
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/products":
 		s.handleListProducts(writer)
@@ -412,6 +435,130 @@ func (s *Server) handleCheckoutPreview(writer http.ResponseWriter, request *http
 		"cart_summary": cart.Summary,
 		"coupon_code":  couponCode,
 		"trace_id":     checkoutTraceID(user.ID, cart.Items, shipping, discount, couponCode),
+	})
+}
+
+func (s *Server) handleCreateOrder(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	order, err := s.store.createOrderFromCart(user.ID)
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "ORDER_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusCreated, map[string]any{"order": order})
+}
+
+func (s *Server) handleListOrders(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	items := s.store.listOrders(user.ID, user.Role)
+	s.writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleGetOrder(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID := strings.TrimPrefix(request.URL.Path, "/api/v1/orders/")
+	if orderID == "" || strings.Contains(orderID, "/") {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	order, exists, err := s.store.getOrder(user.ID, user.Role, orderID)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	if err != nil {
+		s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"order": order})
+}
+
+func (s *Server) handleTransitionOrder(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	base := strings.TrimPrefix(request.URL.Path, "/api/v1/orders/")
+	if !strings.HasSuffix(base, "/transitions") {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	orderID := strings.TrimSuffix(base, "/transitions")
+	if orderID == "" || strings.Contains(orderID, "/") {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+
+	var body orderTransitionRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	order, exists, err := s.store.transitionOrder(user.ID, user.Role, orderID, body.ToStatus)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	if err != nil {
+		if err.Error() == "forbidden" {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusBadRequest, "ORDER_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"order": order})
+}
+
+func (s *Server) handleCloseExpiredOrders(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "admin")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	_ = user
+	var body closeExpiredOrdersRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	closed := s.store.closeExpiredPendingOrders(body.TimeoutSeconds, time.Now().Unix())
+	s.writeJSON(writer, http.StatusOK, map[string]any{
+		"closed_count":     len(closed),
+		"closed_order_ids": closed,
 	})
 }
 

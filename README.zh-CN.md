@@ -22,6 +22,10 @@
   - 结算金额试算
   - 运费/优惠扩展点
   - 同输入下稳定输出 trace_id
+- A005 基线：
+  - 从购物车创建订单
+  - 严格订单状态机流转
+  - 待支付订单超时关单接口
 - `healthz` 健康检查
 - 内存存储（用于快速启动）
 - Go 单元测试覆盖鉴权、RBAC、商品目录、购物车流程
@@ -67,6 +71,11 @@ go run .
 - `PATCH /api/v1/cart/items/{product_id}`（需要 Bearer access token）
 - `DELETE /api/v1/cart/items/{product_id}`（需要 Bearer access token）
 - `POST /api/v1/checkout/preview`（需要 Bearer access token）
+- `POST /api/v1/orders`（需要 Bearer access token）
+- `GET /api/v1/orders`（需要 Bearer access token）
+- `GET /api/v1/orders/{id}`（需要 Bearer access token）
+- `POST /api/v1/orders/{id}/transitions`（需要 Bearer access token）
+- `POST /api/v1/admin/orders/close-expired`（需要 admin token）
 
 ## 运行测试
 

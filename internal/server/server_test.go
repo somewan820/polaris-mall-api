@@ -390,6 +390,105 @@ func TestCheckoutPreviewDeterministicAndCappedDiscount(t *testing.T) {
 	}
 }
 
+func TestOrderLifecycleAndTimeoutClose(t *testing.T) {
+	srv := New("test-secret")
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "order-admin@example.com",
+		"password": "admin-pass",
+		"role":     "admin",
+	}, "")
+	adminLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "order-admin@example.com",
+		"password": "admin-pass",
+	}, "")
+	adminToken := toString(adminLogin.Body["access_token"])
+	createProduct := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"name":         "Order Product",
+		"description":  "Used in order tests",
+		"price_cents":  1200,
+		"stock":        10,
+		"category":     "demo",
+		"shelf_status": "online",
+	}, adminToken)
+	productID := toString(createProduct.Body["item"].(map[string]any)["id"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "order-buyer@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	buyerLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "order-buyer@example.com",
+		"password": "buyer-pass",
+	}, "")
+	buyerToken := toString(buyerLogin.Body["access_token"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   2,
+	}, buyerToken)
+	createOrder := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders", map[string]any{}, buyerToken)
+	if createOrder.Status != http.StatusCreated {
+		t.Fatalf("create order status = %d, want %d", createOrder.Status, http.StatusCreated)
+	}
+	orderID := toString(createOrder.Body["order"].(map[string]any)["id"])
+
+	invalidTransition := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/transitions", map[string]any{
+		"to_status": "shipped",
+	}, buyerToken)
+	if invalidTransition.Status != http.StatusBadRequest {
+		t.Fatalf("invalid transition status = %d, want %d", invalidTransition.Status, http.StatusBadRequest)
+	}
+
+	paid := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/transitions", map[string]any{
+		"to_status": "paid",
+	}, buyerToken)
+	if paid.Status != http.StatusOK {
+		t.Fatalf("paid transition status = %d, want %d", paid.Status, http.StatusOK)
+	}
+	shipped := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/transitions", map[string]any{
+		"to_status": "shipped",
+	}, buyerToken)
+	if shipped.Status != http.StatusOK {
+		t.Fatalf("shipped transition status = %d, want %d", shipped.Status, http.StatusOK)
+	}
+	done := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/transitions", map[string]any{
+		"to_status": "done",
+	}, buyerToken)
+	if done.Status != http.StatusOK {
+		t.Fatalf("done transition status = %d, want %d", done.Status, http.StatusOK)
+	}
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   1,
+	}, buyerToken)
+	pendingOrder := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders", map[string]any{}, buyerToken)
+	if pendingOrder.Status != http.StatusCreated {
+		t.Fatalf("pending order status = %d, want %d", pendingOrder.Status, http.StatusCreated)
+	}
+	pendingOrderID := toString(pendingOrder.Body["order"].(map[string]any)["id"])
+
+	closeExpired := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/orders/close-expired", map[string]any{
+		"timeout_seconds": 0,
+	}, adminToken)
+	if closeExpired.Status != http.StatusOK {
+		t.Fatalf("close expired status = %d, want %d", closeExpired.Status, http.StatusOK)
+	}
+
+	detail := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/orders/"+pendingOrderID, nil, buyerToken)
+	if detail.Status != http.StatusOK {
+		t.Fatalf("order detail status = %d, want %d", detail.Status, http.StatusOK)
+	}
+	detailOrder := detail.Body["order"].(map[string]any)
+	if toString(detailOrder["status"]) != "canceled" {
+		t.Fatalf("pending order status = %s, want canceled", toString(detailOrder["status"]))
+	}
+}
+
 func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any, bearerToken string) testResponse {
 	t.Helper()
 	var bodyBytes []byte
