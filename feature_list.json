@@ -1,0 +1,110 @@
+[
+  {
+    "category": "identity", 
+    "passes": true, 
+    "description": "Implement user registration, login, token refresh, and role-aware authorization", 
+    "notes": "Acceptance: user auth flow works and unauthorized requests are rejected. Dependencies: I001, I003.", 
+    "updated_at": "2026-02-27T06:01:55Z", 
+    "evidence": "Migrated backend to Go; auth endpoints implemented and verified by go test (internal/server).", 
+    "priority": 1, 
+    "steps": [
+      "Create account and credential model with secure password handling", 
+      "Implement access token and refresh token flow", 
+      "Enforce role checks on protected endpoints"
+    ], 
+    "id": "A001"
+  }, 
+  {
+    "category": "catalog", 
+    "passes": true, 
+    "description": "Implement product category, SPU or SKU, price, stock, and shelf status APIs", 
+    "notes": "Acceptance: storefront can fetch product data and hidden products are excluded. Dependencies: A001, I002.", 
+    "updated_at": "2026-02-27T06:01:55Z", 
+    "evidence": "Go catalog endpoints implemented (public/admin) and verified by go test (internal/server).", 
+    "priority": 2, 
+    "steps": [
+      "Define product schema and lifecycle states", 
+      "Provide read APIs for list and detail view", 
+      "Provide admin write APIs for publish and unpublish"
+    ], 
+    "id": "A002"
+  }, 
+  {
+    "category": "cart", 
+    "passes": false, 
+    "description": "Implement cart add, update, remove, and cart query APIs for authenticated users", 
+    "notes": "Acceptance: cart reflects latest valid items and quantities. Dependencies: A001, A002.", 
+    "priority": 3, 
+    "steps": [
+      "Create per-user cart item model and constraints", 
+      "Implement quantity and stock consistency checks", 
+      "Expose cart summary endpoint for web checkout"
+    ], 
+    "id": "A003"
+  }, 
+  {
+    "category": "checkout", 
+    "passes": false, 
+    "description": "Implement checkout pricing API including shipping and discount extension points", 
+    "notes": "Acceptance: same input returns same total and breakdown. Dependencies: A003.", 
+    "priority": 4, 
+    "steps": [
+      "Build order preview request and response contract", 
+      "Calculate item subtotal, freight, and total amount", 
+      "Return deterministic pricing result with trace id"
+    ], 
+    "id": "A004"
+  }, 
+  {
+    "category": "order", 
+    "passes": false, 
+    "description": "Implement order creation and lifecycle transitions with state machine validation", 
+    "notes": "Acceptance: invalid transitions are blocked and timed close is executed. Dependencies: A004, I004.", 
+    "priority": 5, 
+    "steps": [
+      "Create order and order item persistence models", 
+      "Implement transitions for pending, paid, shipped, done, and canceled", 
+      "Add timeout close behavior for unpaid orders"
+    ], 
+    "id": "A005"
+  }, 
+  {
+    "category": "payment", 
+    "passes": false, 
+    "description": "Integrate one payment provider with callback signature check and idempotent update logic", 
+    "notes": "Acceptance: duplicate callback does not duplicate state update. Dependencies: A005, I003, I004.", 
+    "priority": 6, 
+    "steps": [
+      "Create payment order record and status fields", 
+      "Handle callback verification and replay-safe processing", 
+      "Emit payment success or failure events for downstream"
+    ], 
+    "id": "A006"
+  }, 
+  {
+    "category": "fulfillment", 
+    "passes": false, 
+    "description": "Implement shipment, logistics tracking, and refund workflow APIs", 
+    "notes": "Acceptance: paid order can be shipped and refund flow can be tracked. Dependencies: A005, A006.", 
+    "priority": 7, 
+    "steps": [
+      "Add shipment creation and tracking number model", 
+      "Expose order tracking and delivery confirmation APIs", 
+      "Provide refund request and refund status APIs"
+    ], 
+    "id": "A007"
+  }, 
+  {
+    "category": "audit", 
+    "passes": false, 
+    "description": "Implement notification triggers and operation audit log for core order lifecycle events", 
+    "notes": "Acceptance: each core transaction produces traceable audit records. Dependencies: A005, A006, I004, I006.", 
+    "priority": 8, 
+    "steps": [
+      "Publish notification events for order, payment, shipment, and refund", 
+      "Store actor and action audit trail for key mutations", 
+      "Provide query endpoint for operation tracing"
+    ], 
+    "id": "A008"
+  }
+]

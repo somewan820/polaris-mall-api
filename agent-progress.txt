@@ -1,0 +1,20 @@
+## 2026-02-27T05:19:12Z
+- type: init
+- note: Initialized harness for polaris-mall-api
+
+## 2026-02-27T05:42:55Z
+- type: feature_pass
+- note: Marked A001 as passing. Evidence: Implemented register/login/refresh/me/admin endpoints; unit tests passed (3/3).
+
+## 2026-02-27T05:49:56Z
+- type: feature_pass
+- note: Marked A002 as passing. Evidence: Added product list/detail and admin create/update endpoints; API unit tests passed (4/4).
+
+## 2026-02-27T06:01:55Z
+- type: feature_pass
+- note: Marked A001 as passing. Evidence: Migrated backend to Go; auth endpoints implemented and verified by go test (internal/server).
+
+## 2026-02-27T06:01:55Z
+- type: feature_pass
+- note: Marked A002 as passing. Evidence: Go catalog endpoints implemented (public/admin) and verified by go test (internal/server).
+

@@ -1,0 +1,8 @@
+{
+  "project_name": "polaris-mall-api", 
+  "goal": "Deliver API services for catalog, cart, order, and payment flows", 
+  "smoke_command": "", 
+  "dev_command": "", 
+  "version": 1, 
+  "initialized_at": "2026-02-27T05:19:12Z"
+}
