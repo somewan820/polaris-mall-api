@@ -1,118 +1,120 @@
 [
   {
-    "category": "identity", 
-    "passes": true, 
-    "description": "Implement user registration, login, token refresh, and role-aware authorization", 
-    "notes": "Acceptance: user auth flow works and unauthorized requests are rejected. Dependencies: I001, I003.", 
-    "updated_at": "2026-02-27T06:01:55Z", 
-    "evidence": "Migrated backend to Go; auth endpoints implemented and verified by go test (internal/server).", 
-    "priority": 1, 
+    "id": "A001",
+    "priority": 1,
+    "category": "identity",
+    "description": "Implement user registration, login, token refresh, and role-aware authorization",
     "steps": [
-      "Create account and credential model with secure password handling", 
-      "Implement access token and refresh token flow", 
+      "Create account and credential model with secure password handling",
+      "Implement access token and refresh token flow",
       "Enforce role checks on protected endpoints"
-    ], 
-    "id": "A001"
-  }, 
+    ],
+    "passes": true,
+    "evidence": "Migrated backend to Go; auth endpoints implemented and verified by go test (internal/server).",
+    "updated_at": "2026-02-27T06:01:55Z",
+    "notes": "Acceptance: user auth flow works and unauthorized requests are rejected. Dependencies: I001, I003."
+  },
   {
-    "category": "catalog", 
-    "passes": true, 
-    "description": "Implement product category, SPU or SKU, price, stock, and shelf status APIs", 
-    "notes": "Acceptance: storefront can fetch product data and hidden products are excluded. Dependencies: A001, I002.", 
-    "updated_at": "2026-02-27T06:01:55Z", 
-    "evidence": "Go catalog endpoints implemented (public/admin) and verified by go test (internal/server).", 
-    "priority": 2, 
+    "id": "A002",
+    "priority": 2,
+    "category": "catalog",
+    "description": "Implement product category, SPU or SKU, price, stock, and shelf status APIs",
     "steps": [
-      "Define product schema and lifecycle states", 
-      "Provide read APIs for list and detail view", 
+      "Define product schema and lifecycle states",
+      "Provide read APIs for list and detail view",
       "Provide admin write APIs for publish and unpublish"
-    ], 
-    "id": "A002"
-  }, 
+    ],
+    "passes": true,
+    "evidence": "Go catalog endpoints implemented (public/admin) and verified by go test (internal/server).",
+    "updated_at": "2026-02-27T06:01:55Z",
+    "notes": "Acceptance: storefront can fetch product data and hidden products are excluded. Dependencies: A001, I002."
+  },
   {
-    "category": "cart", 
-    "passes": true, 
-    "description": "Implement cart add, update, remove, and cart query APIs for authenticated users", 
-    "notes": "Acceptance: cart reflects latest valid items and quantities. Dependencies: A001, A002.", 
-    "updated_at": "2026-02-27T06:27:26Z", 
-    "evidence": "Go\u8d2d\u7269\u8f66\u63a5\u53e3\uff08\u589e\u5220\u6539\u67e5/\u6c47\u603b\uff09\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002", 
-    "priority": 3, 
+    "id": "A003",
+    "priority": 3,
+    "category": "cart",
+    "description": "Implement cart add, update, remove, and cart query APIs for authenticated users",
     "steps": [
-      "Create per-user cart item model and constraints", 
-      "Implement quantity and stock consistency checks", 
+      "Create per-user cart item model and constraints",
+      "Implement quantity and stock consistency checks",
       "Expose cart summary endpoint for web checkout"
-    ], 
-    "id": "A003"
-  }, 
+    ],
+    "passes": true,
+    "evidence": "Go\u8d2d\u7269\u8f66\u63a5\u53e3\uff08\u589e\u5220\u6539\u67e5/\u6c47\u603b\uff09\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002",
+    "updated_at": "2026-02-27T06:27:26Z",
+    "notes": "Acceptance: cart reflects latest valid items and quantities. Dependencies: A001, A002."
+  },
   {
-    "category": "checkout", 
-    "passes": true, 
-    "description": "Implement checkout pricing API including shipping and discount extension points", 
-    "notes": "Acceptance: same input returns same total and breakdown. Dependencies: A003.", 
-    "updated_at": "2026-02-27T06:32:44Z", 
-    "evidence": "Go\u7ed3\u7b97\u8bd5\u7b97\u63a5\u53e3\u5df2\u5b9e\u73b0\uff08\u542b\u8fd0\u8d39/\u4f18\u60e0\u6269\u5c55\u4e0e\u786e\u5b9a\u6027trace_id\uff09\uff0cgo test ./... \u901a\u8fc7\u3002", 
-    "priority": 4, 
+    "id": "A004",
+    "priority": 4,
+    "category": "checkout",
+    "description": "Implement checkout pricing API including shipping and discount extension points",
     "steps": [
-      "Build order preview request and response contract", 
-      "Calculate item subtotal, freight, and total amount", 
+      "Build order preview request and response contract",
+      "Calculate item subtotal, freight, and total amount",
       "Return deterministic pricing result with trace id"
-    ], 
-    "id": "A004"
-  }, 
+    ],
+    "passes": true,
+    "evidence": "Go\u7ed3\u7b97\u8bd5\u7b97\u63a5\u53e3\u5df2\u5b9e\u73b0\uff08\u542b\u8fd0\u8d39/\u4f18\u60e0\u6269\u5c55\u4e0e\u786e\u5b9a\u6027trace_id\uff09\uff0cgo test ./... \u901a\u8fc7\u3002",
+    "updated_at": "2026-02-27T06:32:44Z",
+    "notes": "Acceptance: same input returns same total and breakdown. Dependencies: A003."
+  },
   {
-    "category": "order", 
-    "passes": true, 
-    "description": "Implement order creation and lifecycle transitions with state machine validation", 
-    "notes": "Acceptance: invalid transitions are blocked and timed close is executed. Dependencies: A004, I004.", 
-    "updated_at": "2026-02-27T06:37:11Z", 
-    "evidence": "Go\u8ba2\u5355\u521b\u5efa/\u72b6\u6001\u673a/\u8d85\u65f6\u5173\u5355\u63a5\u53e3\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002", 
-    "priority": 5, 
+    "id": "A005",
+    "priority": 5,
+    "category": "order",
+    "description": "Implement order creation and lifecycle transitions with state machine validation",
     "steps": [
-      "Create order and order item persistence models", 
-      "Implement transitions for pending, paid, shipped, done, and canceled", 
+      "Create order and order item persistence models",
+      "Implement transitions for pending, paid, shipped, done, and canceled",
       "Add timeout close behavior for unpaid orders"
-    ], 
-    "id": "A005"
-  }, 
+    ],
+    "passes": true,
+    "evidence": "Go\u8ba2\u5355\u521b\u5efa/\u72b6\u6001\u673a/\u8d85\u65f6\u5173\u5355\u63a5\u53e3\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002",
+    "updated_at": "2026-02-27T06:37:11Z",
+    "notes": "Acceptance: invalid transitions are blocked and timed close is executed. Dependencies: A004, I004."
+  },
   {
-    "category": "payment", 
-    "passes": true, 
-    "description": "Integrate one payment provider with callback signature check and idempotent update logic", 
-    "notes": "Acceptance: duplicate callback does not duplicate state update. Dependencies: A005, I003, I004.", 
-    "updated_at": "2026-02-27T06:41:28Z", 
-    "evidence": "\u652f\u4ed8\u5355\u521b\u5efa\u3001\u56de\u8c03\u7b7e\u540d\u9a8c\u7b7e\u4e0e\u5e42\u7b49\u5904\u7406\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002", 
-    "priority": 6, 
+    "id": "A006",
+    "priority": 6,
+    "category": "payment",
+    "description": "Integrate one payment provider with callback signature check and idempotent update logic",
     "steps": [
-      "Create payment order record and status fields", 
-      "Handle callback verification and replay-safe processing", 
+      "Create payment order record and status fields",
+      "Handle callback verification and replay-safe processing",
       "Emit payment success or failure events for downstream"
-    ], 
-    "id": "A006"
-  }, 
+    ],
+    "passes": true,
+    "evidence": "\u652f\u4ed8\u5355\u521b\u5efa\u3001\u56de\u8c03\u7b7e\u540d\u9a8c\u7b7e\u4e0e\u5e42\u7b49\u5904\u7406\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002",
+    "updated_at": "2026-02-27T06:41:28Z",
+    "notes": "Acceptance: duplicate callback does not duplicate state update. Dependencies: A005, I003, I004."
+  },
   {
-    "category": "fulfillment", 
-    "passes": false, 
-    "description": "Implement shipment, logistics tracking, and refund workflow APIs", 
-    "notes": "Acceptance: paid order can be shipped and refund flow can be tracked. Dependencies: A005, A006.", 
-    "priority": 7, 
+    "id": "A007",
+    "priority": 7,
+    "category": "fulfillment",
+    "description": "Implement shipment, logistics tracking, and refund workflow APIs",
     "steps": [
-      "Add shipment creation and tracking number model", 
-      "Expose order tracking and delivery confirmation APIs", 
+      "Add shipment creation and tracking number model",
+      "Expose order tracking and delivery confirmation APIs",
       "Provide refund request and refund status APIs"
-    ], 
-    "id": "A007"
-  }, 
+    ],
+    "passes": true,
+    "notes": "\u9a8c\u6536\u8def\u5f84\uff1a\u652f\u4ed8\u6210\u529f\u540e\u53ef\u53d1\u8d27\uff0c\u4e70\u5bb6\u53ef\u67e5\u8be2\u7269\u6d41\u5e76\u786e\u8ba4\u6536\u8d27\uff0c\u968f\u540e\u53ef\u53d1\u8d77\u9000\u6b3e\u5e76\u67e5\u8be2\u72b6\u6001\u3002",
+    "evidence": "\u5df2\u5b9e\u73b0\u53d1\u8d27/\u7269\u6d41\u67e5\u8be2/\u786e\u8ba4\u6536\u8d27/\u9000\u6b3e\u7533\u8bf7\u4e0e\u67e5\u8be2\u63a5\u53e3\uff0c\u65b0\u589e\u7aef\u5230\u7aef\u6d4b\u8bd5\u5e76\u901a\u8fc7 go test ./...\u3002",
+    "updated_at": "2026-02-27T07:03:30Z"
+  },
   {
-    "category": "audit", 
-    "passes": false, 
-    "description": "Implement notification triggers and operation audit log for core order lifecycle events", 
-    "notes": "Acceptance: each core transaction produces traceable audit records. Dependencies: A005, A006, I004, I006.", 
-    "priority": 8, 
+    "id": "A008",
+    "priority": 8,
+    "category": "audit",
+    "description": "Implement notification triggers and operation audit log for core order lifecycle events",
     "steps": [
-      "Publish notification events for order, payment, shipment, and refund", 
-      "Store actor and action audit trail for key mutations", 
+      "Publish notification events for order, payment, shipment, and refund",
+      "Store actor and action audit trail for key mutations",
       "Provide query endpoint for operation tracing"
-    ], 
-    "id": "A008"
+    ],
+    "passes": false,
+    "notes": "Acceptance: each core transaction produces traceable audit records. Dependencies: A005, A006, I004, I006."
   }
 ]

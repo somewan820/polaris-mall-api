@@ -130,6 +130,48 @@ type publicPayment struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
+type orderShipment struct {
+	OrderID       string
+	TrackingNo    string
+	Carrier       string
+	Status        string
+	ShippedAt     string
+	DeliveredAt   string
+	LastUpdatedAt string
+}
+
+type publicShipment struct {
+	OrderID       string `json:"order_id"`
+	TrackingNo    string `json:"tracking_no"`
+	Carrier       string `json:"carrier"`
+	Status        string `json:"status"`
+	ShippedAt     string `json:"shipped_at"`
+	DeliveredAt   string `json:"delivered_at"`
+	LastUpdatedAt string `json:"last_updated_at"`
+}
+
+type refund struct {
+	ID          string
+	OrderID     string
+	UserID      string
+	AmountCents int
+	Reason      string
+	Status      string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+type publicRefund struct {
+	ID          string `json:"id"`
+	OrderID     string `json:"order_id"`
+	UserID      string `json:"user_id"`
+	AmountCents int    `json:"amount_cents"`
+	Reason      string `json:"reason"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 type refreshSession struct {
 	UserID    string
 	ExpiresAt int64
@@ -143,34 +185,40 @@ type memoryStore struct {
 	nextProductID int
 	nextOrderID   int
 	nextPaymentID int
+	nextRefundID  int
 
 	usersByEmail map[string]user
 	usersByID    map[string]user
 
-	productsByID   map[string]product
-	refreshByJTI   map[string]refreshSession
-	cartsByUser    map[string]map[string]int
-	ordersByID     map[string]order
-	orderIDsByUser map[string][]string
-	paymentsByID   map[string]payment
-	paymentByOrder map[string]string
+	productsByID     map[string]product
+	refreshByJTI     map[string]refreshSession
+	cartsByUser      map[string]map[string]int
+	ordersByID       map[string]order
+	orderIDsByUser   map[string][]string
+	paymentsByID     map[string]payment
+	paymentByOrder   map[string]string
+	shipmentsByOrder map[string]orderShipment
+	refundsByOrder   map[string]refund
 }
 
 func newMemoryStore() *memoryStore {
 	return &memoryStore{
-		nextUserID:     1,
-		nextProductID:  1,
-		nextOrderID:    1,
-		nextPaymentID:  1,
-		usersByEmail:   map[string]user{},
-		usersByID:      map[string]user{},
-		productsByID:   map[string]product{},
-		refreshByJTI:   map[string]refreshSession{},
-		cartsByUser:    map[string]map[string]int{},
-		ordersByID:     map[string]order{},
-		orderIDsByUser: map[string][]string{},
-		paymentsByID:   map[string]payment{},
-		paymentByOrder: map[string]string{},
+		nextUserID:       1,
+		nextProductID:    1,
+		nextOrderID:      1,
+		nextPaymentID:    1,
+		nextRefundID:     1,
+		usersByEmail:     map[string]user{},
+		usersByID:        map[string]user{},
+		productsByID:     map[string]product{},
+		refreshByJTI:     map[string]refreshSession{},
+		cartsByUser:      map[string]map[string]int{},
+		ordersByID:       map[string]order{},
+		orderIDsByUser:   map[string][]string{},
+		paymentsByID:     map[string]payment{},
+		paymentByOrder:   map[string]string{},
+		shipmentsByOrder: map[string]orderShipment{},
+		refundsByOrder:   map[string]refund{},
 	}
 }
 
@@ -729,6 +777,151 @@ func (s *memoryStore) processPaymentCallback(provider, orderID, externalTxnID, r
 	return toPublicPayment(entity), true, idempotent, nil
 }
 
+func (s *memoryStore) shipOrder(orderID, trackingNo, carrier string) (publicShipment, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicShipment{}, false, nil
+	}
+	if orderItem.Status != "paid" {
+		return publicShipment{}, true, fmt.Errorf("order is not ready for shipment")
+	}
+	cleanTracking := strings.TrimSpace(trackingNo)
+	if cleanTracking == "" {
+		return publicShipment{}, true, fmt.Errorf("tracking_no is required")
+	}
+	cleanCarrier := strings.TrimSpace(carrier)
+	if cleanCarrier == "" {
+		cleanCarrier = "mock-logistics"
+	}
+	now := nowISO()
+	shipment := orderShipment{
+		OrderID:       orderID,
+		TrackingNo:    cleanTracking,
+		Carrier:       cleanCarrier,
+		Status:        "in_transit",
+		ShippedAt:     now,
+		DeliveredAt:   "",
+		LastUpdatedAt: now,
+	}
+	s.shipmentsByOrder[orderID] = shipment
+	orderItem.Status = "shipped"
+	orderItem.UpdatedAt = now
+	s.ordersByID[orderID] = orderItem
+	return toPublicShipment(shipment), true, nil
+}
+
+func (s *memoryStore) getShipment(actorUserID, actorRole, orderID string) (publicShipment, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicShipment{}, false, nil
+	}
+	if actorRole != "admin" && orderItem.UserID != actorUserID {
+		return publicShipment{}, true, fmt.Errorf("forbidden")
+	}
+	shipment, found := s.shipmentsByOrder[orderID]
+	if !found {
+		return publicShipment{}, false, nil
+	}
+	return toPublicShipment(shipment), true, nil
+}
+
+func (s *memoryStore) confirmDelivery(actorUserID, actorRole, orderID string) (publicOrder, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicOrder{}, false, nil
+	}
+	if actorRole != "admin" && orderItem.UserID != actorUserID {
+		return publicOrder{}, true, fmt.Errorf("forbidden")
+	}
+	if orderItem.Status != "shipped" {
+		return publicOrder{}, true, fmt.Errorf("order is not in shipped state")
+	}
+	shipment, found := s.shipmentsByOrder[orderID]
+	if !found {
+		return publicOrder{}, true, fmt.Errorf("shipment not found")
+	}
+	now := nowISO()
+	shipment.Status = "delivered"
+	shipment.DeliveredAt = now
+	shipment.LastUpdatedAt = now
+	s.shipmentsByOrder[orderID] = shipment
+	orderItem.Status = "done"
+	orderItem.UpdatedAt = now
+	s.ordersByID[orderID] = orderItem
+	return toPublicOrder(orderItem), true, nil
+}
+
+func (s *memoryStore) requestRefund(actorUserID, actorRole, orderID string, amountCents int, reason string) (publicRefund, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicRefund{}, false, nil
+	}
+	if actorRole != "admin" && orderItem.UserID != actorUserID {
+		return publicRefund{}, true, fmt.Errorf("forbidden")
+	}
+	if orderItem.Status != "paid" && orderItem.Status != "shipped" && orderItem.Status != "done" {
+		return publicRefund{}, true, fmt.Errorf("order is not refundable")
+	}
+	if existing, found := s.refundsByOrder[orderID]; found {
+		return toPublicRefund(existing), true, nil
+	}
+	if amountCents <= 0 {
+		amountCents = orderItem.TotalCents
+	}
+	if amountCents > orderItem.TotalCents {
+		return publicRefund{}, true, fmt.Errorf("refund amount exceeds order total")
+	}
+	cleanReason := strings.TrimSpace(reason)
+	if cleanReason == "" {
+		cleanReason = "buyer_request"
+	}
+	id := fmt.Sprintf("RFD%04d", s.nextRefundID)
+	s.nextRefundID++
+	now := nowISO()
+	entity := refund{
+		ID:          id,
+		OrderID:     orderID,
+		UserID:      orderItem.UserID,
+		AmountCents: amountCents,
+		Reason:      cleanReason,
+		Status:      "requested",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	s.refundsByOrder[orderID] = entity
+	return toPublicRefund(entity), true, nil
+}
+
+func (s *memoryStore) getRefund(actorUserID, actorRole, orderID string) (publicRefund, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicRefund{}, false, nil
+	}
+	if actorRole != "admin" && orderItem.UserID != actorUserID {
+		return publicRefund{}, true, fmt.Errorf("forbidden")
+	}
+	entity, found := s.refundsByOrder[orderID]
+	if !found {
+		return publicRefund{}, false, nil
+	}
+	return toPublicRefund(entity), true, nil
+}
+
 func toPublicUser(item user) publicUser {
 	return publicUser{
 		ID:        item.ID,
@@ -845,6 +1038,31 @@ func toPublicPayment(item payment) publicPayment {
 		ExternalTxnID: item.ExternalTxnID,
 		CreatedAt:     item.CreatedAt,
 		UpdatedAt:     item.UpdatedAt,
+	}
+}
+
+func toPublicShipment(item orderShipment) publicShipment {
+	return publicShipment{
+		OrderID:       item.OrderID,
+		TrackingNo:    item.TrackingNo,
+		Carrier:       item.Carrier,
+		Status:        item.Status,
+		ShippedAt:     item.ShippedAt,
+		DeliveredAt:   item.DeliveredAt,
+		LastUpdatedAt: item.LastUpdatedAt,
+	}
+}
+
+func toPublicRefund(item refund) publicRefund {
+	return publicRefund{
+		ID:          item.ID,
+		OrderID:     item.OrderID,
+		UserID:      item.UserID,
+		AmountCents: item.AmountCents,
+		Reason:      item.Reason,
+		Status:      item.Status,
+		CreatedAt:   item.CreatedAt,
+		UpdatedAt:   item.UpdatedAt,
 	}
 }
 

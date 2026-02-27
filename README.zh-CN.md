@@ -30,9 +30,13 @@
   - 基于订单创建支付单
   - 回调签名验签
   - 重复回调幂等处理
+- A007 基线：
+  - 已支付订单的管理员发货
+  - 买家/管理员物流轨迹查询
+  - 买家确认收货与退款申请/查询
 - `healthz` 健康检查
 - 内存存储（用于快速启动）
-- Go 单元测试覆盖鉴权、RBAC、商品目录、购物车流程
+- Go 单元测试覆盖鉴权、RBAC、商品目录、订单支付履约流程
 
 ## 目录结构
 
@@ -84,6 +88,11 @@ go run .
 - `POST /api/v1/payments/create`（需要 Bearer access token）
 - `GET /api/v1/payments/order/{order_id}`（需要 Bearer access token）
 - `POST /api/v1/payments/callback/mockpay`（需在 `X-Mockpay-Signature` 传入签名）
+- `POST /api/v1/admin/orders/{id}/ship`（需要 admin token）
+- `GET /api/v1/orders/{id}/tracking`（需要 Bearer access token）
+- `POST /api/v1/orders/{id}/confirm-delivery`（需要 Bearer access token）
+- `POST /api/v1/orders/{id}/refunds`（需要 Bearer access token）
+- `GET /api/v1/orders/{id}/refunds`（需要 Bearer access token）
 
 ## 运行测试
 

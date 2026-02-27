@@ -30,9 +30,13 @@ Language: English | [中文](README.zh-CN.md)
   - payment creation by order
   - callback signature verification
   - idempotent callback processing
+- A007 baseline:
+  - admin shipment creation for paid orders
+  - buyer/admin tracking query
+  - buyer delivery confirmation and refund request/query
 - health endpoint
 - in-memory store for rapid bootstrap
-- Go unit tests for auth, RBAC, and product catalog behavior
+- Go unit tests for auth, RBAC, order-payment-fulfillment workflow, and product catalog behavior
 
 ## Directory Layout
 
@@ -84,6 +88,11 @@ Environment variables:
 - `POST /api/v1/payments/create` (Bearer access token required)
 - `GET /api/v1/payments/order/{order_id}` (Bearer access token required)
 - `POST /api/v1/payments/callback/mockpay` (callback signature required via `X-Mockpay-Signature`)
+- `POST /api/v1/admin/orders/{id}/ship` (Bearer admin token required)
+- `GET /api/v1/orders/{id}/tracking` (Bearer access token required)
+- `POST /api/v1/orders/{id}/confirm-delivery` (Bearer access token required)
+- `POST /api/v1/orders/{id}/refunds` (Bearer access token required)
+- `GET /api/v1/orders/{id}/refunds` (Bearer access token required)
 
 ## Run Tests
 

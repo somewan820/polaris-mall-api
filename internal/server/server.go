@@ -73,6 +73,16 @@ type paymentCallbackRequest struct {
 	Result        string `json:"result"`
 }
 
+type shipOrderRequest struct {
+	TrackingNo string `json:"tracking_no"`
+	Carrier    string `json:"carrier"`
+}
+
+type requestRefundBody struct {
+	AmountCents int    `json:"amount_cents"`
+	Reason      string `json:"reason"`
+}
+
 type createProductInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -162,6 +172,18 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/orders":
 		s.handleListOrders(writer, request)
 		return
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/confirm-delivery") && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
+		s.handleConfirmDelivery(writer, request)
+		return
+	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/tracking") && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
+		s.handleGetTracking(writer, request)
+		return
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/refunds") && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
+		s.handleRequestRefund(writer, request)
+		return
+	case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/refunds") && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
+		s.handleGetRefund(writer, request)
+		return
 	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/transitions") && strings.HasPrefix(request.URL.Path, "/api/v1/orders/"):
 		s.handleTransitionOrder(writer, request)
 		return
@@ -170,6 +192,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/admin/orders/close-expired":
 		s.handleCloseExpiredOrders(writer, request)
+		return
+	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/ship") && strings.HasPrefix(request.URL.Path, "/api/v1/admin/orders/"):
+		s.handleShipOrder(writer, request)
 		return
 	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/payments/create":
 		s.handleCreatePayment(writer, request)
@@ -590,6 +615,159 @@ func (s *Server) handleCloseExpiredOrders(writer http.ResponseWriter, request *h
 	})
 }
 
+func (s *Server) handleShipOrder(writer http.ResponseWriter, request *http.Request) {
+	_, status, ok := s.authUser(request, "admin")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID, valid := extractOrderID(request.URL.Path, "/api/v1/admin/orders/", "/ship")
+	if !valid {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	var body shipOrderRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	shipment, exists, err := s.store.shipOrder(orderID, body.TrackingNo, body.Carrier)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "SHIPMENT_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"shipment": shipment})
+}
+
+func (s *Server) handleGetTracking(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID, valid := extractOrderID(request.URL.Path, "/api/v1/orders/", "/tracking")
+	if !valid {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	shipment, exists, err := s.store.getShipment(user.ID, user.Role, orderID)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "SHIPMENT_NOT_FOUND", "Shipment not found")
+		return
+	}
+	if err != nil {
+		s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"shipment": shipment})
+}
+
+func (s *Server) handleConfirmDelivery(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID, valid := extractOrderID(request.URL.Path, "/api/v1/orders/", "/confirm-delivery")
+	if !valid {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	order, exists, err := s.store.confirmDelivery(user.ID, user.Role, orderID)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	if err != nil {
+		if err.Error() == "forbidden" {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusBadRequest, "ORDER_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"order": order})
+}
+
+func (s *Server) handleRequestRefund(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID, valid := extractOrderID(request.URL.Path, "/api/v1/orders/", "/refunds")
+	if !valid {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	var body requestRefundBody
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	refund, exists, err := s.store.requestRefund(user.ID, user.Role, orderID, body.AmountCents, body.Reason)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	if err != nil {
+		if err.Error() == "forbidden" {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusBadRequest, "REFUND_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"refund": refund})
+}
+
+func (s *Server) handleGetRefund(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID, valid := extractOrderID(request.URL.Path, "/api/v1/orders/", "/refunds")
+	if !valid {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	refund, exists, err := s.store.getRefund(user.ID, user.Role, orderID)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "REFUND_NOT_FOUND", "Refund not found")
+		return
+	}
+	if err != nil {
+		s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"refund": refund})
+}
+
 func (s *Server) handleCreatePayment(writer http.ResponseWriter, request *http.Request) {
 	user, status, ok := s.authUser(request, "")
 	if !ok {
@@ -790,6 +968,17 @@ func (s *Server) writeCORS(writer http.ResponseWriter) {
 
 func (s *Server) writeError(writer http.ResponseWriter, status int, code, message string) {
 	s.writeJSON(writer, status, apiErrorEnvelope{Error: apiError{Code: code, Message: message}})
+}
+
+func extractOrderID(path, prefix, suffix string) (string, bool) {
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	orderID := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	if orderID == "" || strings.Contains(orderID, "/") {
+		return "", false
+	}
+	return orderID, true
 }
 
 func checkoutTraceID(userID string, items []publicCartItem, shipping, discount int, couponCode string) string {

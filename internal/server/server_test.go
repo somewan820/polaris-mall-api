@@ -592,6 +592,132 @@ func TestPaymentCallbackSignatureAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestFulfillmentShipmentTrackingAndRefundFlow(t *testing.T) {
+	callbackSecret := "fulfillment-test-secret"
+	srv := NewWithSecrets("test-secret", callbackSecret)
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "fulfillment-admin@example.com",
+		"password": "admin-pass",
+		"role":     "admin",
+	}, "")
+	adminLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "fulfillment-admin@example.com",
+		"password": "admin-pass",
+	}, "")
+	adminToken := toString(adminLogin.Body["access_token"])
+
+	createProduct := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"name":         "Fulfillment Product",
+		"description":  "Used in fulfillment tests",
+		"price_cents":  2580,
+		"stock":        5,
+		"category":     "demo",
+		"shelf_status": "online",
+	}, adminToken)
+	productID := toString(createProduct.Body["item"].(map[string]any)["id"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "fulfillment-buyer@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	buyerLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "fulfillment-buyer@example.com",
+		"password": "buyer-pass",
+	}, "")
+	buyerToken := toString(buyerLogin.Body["access_token"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   1,
+	}, buyerToken)
+	orderResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders", map[string]any{}, buyerToken)
+	if orderResp.Status != http.StatusCreated {
+		t.Fatalf("create order status = %d, want %d", orderResp.Status, http.StatusCreated)
+	}
+	orderID := toString(orderResp.Body["order"].(map[string]any)["id"])
+
+	createPayment := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/create", map[string]any{
+		"order_id": orderID,
+		"provider": "mockpay",
+	}, buyerToken)
+	if createPayment.Status != http.StatusOK {
+		t.Fatalf("create payment status = %d, want %d", createPayment.Status, http.StatusOK)
+	}
+
+	callbackPayload := map[string]any{
+		"order_id":        orderID,
+		"external_txn_id": "txn-fulfillment-1",
+		"result":          "success",
+	}
+	rawBody, err := json.Marshal(callbackPayload)
+	if err != nil {
+		t.Fatalf("marshal callback payload: %v", err)
+	}
+	signature := signCallback(rawBody, callbackSecret)
+	callbackResp := callRawJSONWithHeaders(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/callback/mockpay", rawBody, map[string]string{
+		"X-Mockpay-Signature": signature,
+		"Content-Type":        "application/json",
+	})
+	if callbackResp.Status != http.StatusOK {
+		t.Fatalf("callback status = %d, want %d", callbackResp.Status, http.StatusOK)
+	}
+
+	shipResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/orders/"+orderID+"/ship", map[string]any{
+		"tracking_no": "SF123456789CN",
+		"carrier":     "SF",
+	}, adminToken)
+	if shipResp.Status != http.StatusOK {
+		t.Fatalf("ship status = %d, want %d", shipResp.Status, http.StatusOK)
+	}
+	shipment := shipResp.Body["shipment"].(map[string]any)
+	if toString(shipment["status"]) != "in_transit" {
+		t.Fatalf("shipment status = %s, want in_transit", toString(shipment["status"]))
+	}
+
+	trackingResp := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/orders/"+orderID+"/tracking", nil, buyerToken)
+	if trackingResp.Status != http.StatusOK {
+		t.Fatalf("tracking status = %d, want %d", trackingResp.Status, http.StatusOK)
+	}
+	tracking := trackingResp.Body["shipment"].(map[string]any)
+	if toString(tracking["tracking_no"]) != "SF123456789CN" {
+		t.Fatalf("tracking_no = %s, want SF123456789CN", toString(tracking["tracking_no"]))
+	}
+
+	confirmResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/confirm-delivery", map[string]any{}, buyerToken)
+	if confirmResp.Status != http.StatusOK {
+		t.Fatalf("confirm delivery status = %d, want %d", confirmResp.Status, http.StatusOK)
+	}
+	if toString(confirmResp.Body["order"].(map[string]any)["status"]) != "done" {
+		t.Fatalf("order status after confirm should be done")
+	}
+
+	refundReq := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/refunds", map[string]any{
+		"amount_cents": 1000,
+		"reason":       "buyer_request",
+	}, buyerToken)
+	if refundReq.Status != http.StatusOK {
+		t.Fatalf("request refund status = %d, want %d", refundReq.Status, http.StatusOK)
+	}
+	refund := refundReq.Body["refund"].(map[string]any)
+	if toString(refund["status"]) != "requested" {
+		t.Fatalf("refund status = %s, want requested", toString(refund["status"]))
+	}
+	refundID := toString(refund["id"])
+
+	refundGet := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/orders/"+orderID+"/refunds", nil, buyerToken)
+	if refundGet.Status != http.StatusOK {
+		t.Fatalf("get refund status = %d, want %d", refundGet.Status, http.StatusOK)
+	}
+	got := refundGet.Body["refund"].(map[string]any)
+	if toString(got["id"]) != refundID {
+		t.Fatalf("refund id = %s, want %s", toString(got["id"]), refundID)
+	}
+}
+
 func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any, bearerToken string) testResponse {
 	t.Helper()
 	var bodyBytes []byte
