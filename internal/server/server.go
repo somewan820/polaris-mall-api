@@ -148,6 +148,12 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/ping":
 		s.handleAdminPing(writer, request)
 		return
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/notifications/events":
+		s.handleListNotifications(writer, request)
+		return
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/audit/logs":
+		s.handleListAuditLogs(writer, request)
+		return
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/cart":
 		s.handleCartQuery(writer, request)
 		return
@@ -347,6 +353,36 @@ func (s *Server) handleAdminPing(writer http.ResponseWriter, request *http.Reque
 	s.writeJSON(writer, http.StatusOK, map[string]string{"status": "ok", "scope": "admin"})
 }
 
+func (s *Server) handleListNotifications(writer http.ResponseWriter, request *http.Request) {
+	_, status, ok := s.authUser(request, "admin")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID := strings.TrimSpace(request.URL.Query().Get("order_id"))
+	items := s.store.listNotifications(orderID)
+	s.writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleListAuditLogs(writer http.ResponseWriter, request *http.Request) {
+	_, status, ok := s.authUser(request, "admin")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID := strings.TrimSpace(request.URL.Query().Get("order_id"))
+	items := s.store.listAuditLogs(orderID)
+	s.writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) handleListProducts(writer http.ResponseWriter) {
 	items := s.store.listProducts(false)
 	s.writeJSON(writer, http.StatusOK, map[string]any{"items": items})
@@ -506,6 +542,16 @@ func (s *Server) handleCreateOrder(writer http.ResponseWriter, request *http.Req
 		s.writeError(writer, http.StatusBadRequest, "ORDER_INVALID", err.Error())
 		return
 	}
+	s.store.appendNotification("order.created", order.ID, map[string]string{
+		"order_id":    order.ID,
+		"user_id":     order.UserID,
+		"status":      order.Status,
+		"total_cents": fmt.Sprintf("%d", order.TotalCents),
+	})
+	s.store.appendAudit(user.ID, user.Role, "order.create", "order", order.ID, map[string]string{
+		"order_id": order.ID,
+		"status":   order.Status,
+	})
 	s.writeJSON(writer, http.StatusCreated, map[string]any{"order": order})
 }
 
@@ -589,6 +635,14 @@ func (s *Server) handleTransitionOrder(writer http.ResponseWriter, request *http
 		s.writeError(writer, http.StatusBadRequest, "ORDER_INVALID", err.Error())
 		return
 	}
+	s.store.appendNotification("order.transitioned", order.ID, map[string]string{
+		"order_id":  order.ID,
+		"to_status": order.Status,
+	})
+	s.store.appendAudit(user.ID, user.Role, "order.transition", "order", order.ID, map[string]string{
+		"order_id":  order.ID,
+		"to_status": order.Status,
+	})
 	s.writeJSON(writer, http.StatusOK, map[string]any{"order": order})
 }
 
@@ -602,13 +656,20 @@ func (s *Server) handleCloseExpiredOrders(writer http.ResponseWriter, request *h
 		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
 		return
 	}
-	_ = user
 	var body closeExpiredOrdersRequest
 	if err := s.readJSON(request, &body); err != nil {
 		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
 		return
 	}
 	closed := s.store.closeExpiredPendingOrders(body.TimeoutSeconds, time.Now().Unix())
+	for _, orderID := range closed {
+		s.store.appendNotification("order.closed_timeout", orderID, map[string]string{
+			"order_id": orderID,
+		})
+		s.store.appendAudit(user.ID, user.Role, "order.close_expired", "order", orderID, map[string]string{
+			"order_id": orderID,
+		})
+	}
 	s.writeJSON(writer, http.StatusOK, map[string]any{
 		"closed_count":     len(closed),
 		"closed_order_ids": closed,
@@ -616,7 +677,7 @@ func (s *Server) handleCloseExpiredOrders(writer http.ResponseWriter, request *h
 }
 
 func (s *Server) handleShipOrder(writer http.ResponseWriter, request *http.Request) {
-	_, status, ok := s.authUser(request, "admin")
+	user, status, ok := s.authUser(request, "admin")
 	if !ok {
 		if status == http.StatusForbidden {
 			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
@@ -644,6 +705,17 @@ func (s *Server) handleShipOrder(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, http.StatusBadRequest, "SHIPMENT_INVALID", err.Error())
 		return
 	}
+	s.store.appendNotification("shipment.created", shipment.OrderID, map[string]string{
+		"order_id":    shipment.OrderID,
+		"tracking_no": shipment.TrackingNo,
+		"carrier":     shipment.Carrier,
+		"status":      shipment.Status,
+	})
+	s.store.appendAudit(user.ID, user.Role, "shipment.create", "shipment", shipment.OrderID, map[string]string{
+		"order_id":    shipment.OrderID,
+		"tracking_no": shipment.TrackingNo,
+		"carrier":     shipment.Carrier,
+	})
 	s.writeJSON(writer, http.StatusOK, map[string]any{"shipment": shipment})
 }
 
@@ -702,6 +774,14 @@ func (s *Server) handleConfirmDelivery(writer http.ResponseWriter, request *http
 		s.writeError(writer, http.StatusBadRequest, "ORDER_INVALID", err.Error())
 		return
 	}
+	s.store.appendNotification("order.delivered", order.ID, map[string]string{
+		"order_id": order.ID,
+		"status":   order.Status,
+	})
+	s.store.appendAudit(user.ID, user.Role, "order.confirm_delivery", "order", order.ID, map[string]string{
+		"order_id": order.ID,
+		"status":   order.Status,
+	})
 	s.writeJSON(writer, http.StatusOK, map[string]any{"order": order})
 }
 
@@ -738,6 +818,17 @@ func (s *Server) handleRequestRefund(writer http.ResponseWriter, request *http.R
 		s.writeError(writer, http.StatusBadRequest, "REFUND_INVALID", err.Error())
 		return
 	}
+	s.store.appendNotification("refund.requested", refund.OrderID, map[string]string{
+		"order_id":     refund.OrderID,
+		"refund_id":    refund.ID,
+		"amount_cents": fmt.Sprintf("%d", refund.AmountCents),
+		"status":       refund.Status,
+	})
+	s.store.appendAudit(user.ID, user.Role, "refund.request", "refund", refund.ID, map[string]string{
+		"order_id":     refund.OrderID,
+		"refund_id":    refund.ID,
+		"amount_cents": fmt.Sprintf("%d", refund.AmountCents),
+	})
 	s.writeJSON(writer, http.StatusOK, map[string]any{"refund": refund})
 }
 
@@ -796,6 +887,17 @@ func (s *Server) handleCreatePayment(writer http.ResponseWriter, request *http.R
 		s.writeError(writer, http.StatusBadRequest, "PAYMENT_INVALID", err.Error())
 		return
 	}
+	s.store.appendNotification("payment.created", payment.OrderID, map[string]string{
+		"order_id":   payment.OrderID,
+		"payment_id": payment.ID,
+		"provider":   payment.Provider,
+		"status":     payment.Status,
+	})
+	s.store.appendAudit(user.ID, user.Role, "payment.create", "payment", payment.ID, map[string]string{
+		"order_id":   payment.OrderID,
+		"payment_id": payment.ID,
+		"provider":   payment.Provider,
+	})
 	s.writeJSON(writer, http.StatusOK, map[string]any{"payment": payment})
 }
 
@@ -851,6 +953,23 @@ func (s *Server) handleMockpayCallback(writer http.ResponseWriter, request *http
 		s.writeError(writer, http.StatusBadRequest, "CALLBACK_INVALID", err.Error())
 		return
 	}
+	eventType := "payment.failed"
+	if payment.Status == "succeeded" {
+		eventType = "payment.succeeded"
+	}
+	s.store.appendNotification(eventType, payment.OrderID, map[string]string{
+		"order_id":   payment.OrderID,
+		"payment_id": payment.ID,
+		"provider":   "mockpay",
+		"status":     payment.Status,
+	})
+	s.store.appendAudit("system", "system", "payment.callback", "payment", payment.ID, map[string]string{
+		"order_id":   payment.OrderID,
+		"payment_id": payment.ID,
+		"provider":   "mockpay",
+		"status":     payment.Status,
+		"idempotent": fmt.Sprintf("%t", idempotent),
+	})
 	s.writeJSON(writer, http.StatusOK, map[string]any{
 		"payment":    payment,
 		"idempotent": idempotent,

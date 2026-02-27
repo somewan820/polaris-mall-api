@@ -38,3 +38,7 @@
 - type: feature_pass
 - note: Marked A007 as passing. Evidence: 已实现发货/物流查询/确认收货/退款申请与查询接口，新增端到端测试并通过 go test ./...。
 
+## 2026-02-27T07:13:57Z
+- type: feature_pass
+- note: Marked A008 as passing. Evidence: 已实现核心交易事件通知与审计日志，新增管理员追踪查询接口并通过 go test ./...。
+

@@ -718,6 +718,130 @@ func TestFulfillmentShipmentTrackingAndRefundFlow(t *testing.T) {
 	}
 }
 
+func TestAuditAndNotificationTracing(t *testing.T) {
+	callbackSecret := "audit-test-secret"
+	srv := NewWithSecrets("test-secret", callbackSecret)
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "audit-admin@example.com",
+		"password": "admin-pass",
+		"role":     "admin",
+	}, "")
+	adminLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "audit-admin@example.com",
+		"password": "admin-pass",
+	}, "")
+	adminToken := toString(adminLogin.Body["access_token"])
+
+	createProduct := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"name":         "Audit Product",
+		"description":  "Used in audit tests",
+		"price_cents":  3200,
+		"stock":        5,
+		"category":     "demo",
+		"shelf_status": "online",
+	}, adminToken)
+	productID := toString(createProduct.Body["item"].(map[string]any)["id"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "audit-buyer@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	buyerLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "audit-buyer@example.com",
+		"password": "buyer-pass",
+	}, "")
+	buyerToken := toString(buyerLogin.Body["access_token"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   1,
+	}, buyerToken)
+	orderResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders", map[string]any{}, buyerToken)
+	if orderResp.Status != http.StatusCreated {
+		t.Fatalf("create order status = %d, want %d", orderResp.Status, http.StatusCreated)
+	}
+	orderID := toString(orderResp.Body["order"].(map[string]any)["id"])
+
+	createPayment := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/create", map[string]any{
+		"order_id": orderID,
+		"provider": "mockpay",
+	}, buyerToken)
+	if createPayment.Status != http.StatusOK {
+		t.Fatalf("create payment status = %d, want %d", createPayment.Status, http.StatusOK)
+	}
+
+	callbackPayload := map[string]any{
+		"order_id":        orderID,
+		"external_txn_id": "txn-audit-1",
+		"result":          "success",
+	}
+	rawBody, err := json.Marshal(callbackPayload)
+	if err != nil {
+		t.Fatalf("marshal callback payload: %v", err)
+	}
+	signature := signCallback(rawBody, callbackSecret)
+	callbackResp := callRawJSONWithHeaders(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/callback/mockpay", rawBody, map[string]string{
+		"X-Mockpay-Signature": signature,
+		"Content-Type":        "application/json",
+	})
+	if callbackResp.Status != http.StatusOK {
+		t.Fatalf("callback status = %d, want %d", callbackResp.Status, http.StatusOK)
+	}
+
+	shipResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/orders/"+orderID+"/ship", map[string]any{
+		"tracking_no": "YTO-AUDIT-001",
+		"carrier":     "YTO",
+	}, adminToken)
+	if shipResp.Status != http.StatusOK {
+		t.Fatalf("ship status = %d, want %d", shipResp.Status, http.StatusOK)
+	}
+
+	refundResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders/"+orderID+"/refunds", map[string]any{
+		"amount_cents": 2000,
+		"reason":       "audit_case",
+	}, buyerToken)
+	if refundResp.Status != http.StatusOK {
+		t.Fatalf("refund status = %d, want %d", refundResp.Status, http.StatusOK)
+	}
+
+	eventsResp := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/admin/notifications/events?order_id="+orderID, nil, adminToken)
+	if eventsResp.Status != http.StatusOK {
+		t.Fatalf("events status = %d, want %d", eventsResp.Status, http.StatusOK)
+	}
+	eventItems := eventsResp.Body["items"].([]any)
+	eventSet := map[string]bool{}
+	for _, raw := range eventItems {
+		item := raw.(map[string]any)
+		eventSet[toString(item["event_type"])] = true
+	}
+	if !eventSet["order.created"] || !eventSet["payment.created"] || !eventSet["payment.succeeded"] || !eventSet["shipment.created"] || !eventSet["refund.requested"] {
+		t.Fatalf("event types missing, got %+v", eventSet)
+	}
+
+	auditResp := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/admin/audit/logs?order_id="+orderID, nil, adminToken)
+	if auditResp.Status != http.StatusOK {
+		t.Fatalf("audit status = %d, want %d", auditResp.Status, http.StatusOK)
+	}
+	auditItems := auditResp.Body["items"].([]any)
+	actionSet := map[string]bool{}
+	for _, raw := range auditItems {
+		item := raw.(map[string]any)
+		actionSet[toString(item["action"])] = true
+	}
+	if !actionSet["order.create"] || !actionSet["payment.create"] || !actionSet["payment.callback"] || !actionSet["shipment.create"] || !actionSet["refund.request"] {
+		t.Fatalf("audit actions missing, got %+v", actionSet)
+	}
+
+	buyerAudit := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/admin/audit/logs?order_id="+orderID, nil, buyerToken)
+	if buyerAudit.Status != http.StatusForbidden {
+		t.Fatalf("buyer audit status = %d, want %d", buyerAudit.Status, http.StatusForbidden)
+	}
+}
+
 func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any, bearerToken string) testResponse {
 	t.Helper()
 	var bodyBytes []byte

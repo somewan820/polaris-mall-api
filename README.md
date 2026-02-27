@@ -34,9 +34,13 @@ Language: English | [中文](README.zh-CN.md)
   - admin shipment creation for paid orders
   - buyer/admin tracking query
   - buyer delivery confirmation and refund request/query
+- A008 baseline:
+  - notification triggers for order, payment, shipment, and refund
+  - operation audit log for core transaction mutations
+  - admin trace query endpoints by order id
 - health endpoint
 - in-memory store for rapid bootstrap
-- Go unit tests for auth, RBAC, order-payment-fulfillment workflow, and product catalog behavior
+- Go unit tests for auth, RBAC, order-payment-fulfillment-audit workflow, and product catalog behavior
 
 ## Directory Layout
 
@@ -93,6 +97,8 @@ Environment variables:
 - `POST /api/v1/orders/{id}/confirm-delivery` (Bearer access token required)
 - `POST /api/v1/orders/{id}/refunds` (Bearer access token required)
 - `GET /api/v1/orders/{id}/refunds` (Bearer access token required)
+- `GET /api/v1/admin/notifications/events` (Bearer admin token required, supports `order_id` query)
+- `GET /api/v1/admin/audit/logs` (Bearer admin token required, supports `order_id` query)
 
 ## Run Tests
 

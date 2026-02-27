@@ -172,6 +172,44 @@ type publicRefund struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
+type notificationEvent struct {
+	ID        string
+	EventType string
+	OrderID   string
+	Payload   map[string]string
+	CreatedAt string
+}
+
+type publicNotificationEvent struct {
+	ID        string            `json:"id"`
+	EventType string            `json:"event_type"`
+	OrderID   string            `json:"order_id"`
+	Payload   map[string]string `json:"payload"`
+	CreatedAt string            `json:"created_at"`
+}
+
+type auditLog struct {
+	ID          string
+	ActorUserID string
+	ActorRole   string
+	Action      string
+	TargetType  string
+	TargetID    string
+	Details     map[string]string
+	CreatedAt   string
+}
+
+type publicAuditLog struct {
+	ID          string            `json:"id"`
+	ActorUserID string            `json:"actor_user_id"`
+	ActorRole   string            `json:"actor_role"`
+	Action      string            `json:"action"`
+	TargetType  string            `json:"target_type"`
+	TargetID    string            `json:"target_id"`
+	Details     map[string]string `json:"details"`
+	CreatedAt   string            `json:"created_at"`
+}
+
 type refreshSession struct {
 	UserID    string
 	ExpiresAt int64
@@ -186,6 +224,8 @@ type memoryStore struct {
 	nextOrderID   int
 	nextPaymentID int
 	nextRefundID  int
+	nextEventID   int
+	nextAuditID   int
 
 	usersByEmail map[string]user
 	usersByID    map[string]user
@@ -199,6 +239,8 @@ type memoryStore struct {
 	paymentByOrder   map[string]string
 	shipmentsByOrder map[string]orderShipment
 	refundsByOrder   map[string]refund
+	notificationLogs []notificationEvent
+	auditLogs        []auditLog
 }
 
 func newMemoryStore() *memoryStore {
@@ -208,6 +250,8 @@ func newMemoryStore() *memoryStore {
 		nextOrderID:      1,
 		nextPaymentID:    1,
 		nextRefundID:     1,
+		nextEventID:      1,
+		nextAuditID:      1,
 		usersByEmail:     map[string]user{},
 		usersByID:        map[string]user{},
 		productsByID:     map[string]product{},
@@ -219,6 +263,8 @@ func newMemoryStore() *memoryStore {
 		paymentByOrder:   map[string]string{},
 		shipmentsByOrder: map[string]orderShipment{},
 		refundsByOrder:   map[string]refund{},
+		notificationLogs: []notificationEvent{},
+		auditLogs:        []auditLog{},
 	}
 }
 
@@ -922,6 +968,79 @@ func (s *memoryStore) getRefund(actorUserID, actorRole, orderID string) (publicR
 	return toPublicRefund(entity), true, nil
 }
 
+func (s *memoryStore) appendNotification(eventType, orderID string, payload map[string]string) publicNotificationEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := fmt.Sprintf("EVT%04d", s.nextEventID)
+	s.nextEventID++
+	item := notificationEvent{
+		ID:        id,
+		EventType: strings.TrimSpace(strings.ToLower(eventType)),
+		OrderID:   strings.TrimSpace(orderID),
+		Payload:   cloneStringMap(payload),
+		CreatedAt: nowISO(),
+	}
+	s.notificationLogs = append(s.notificationLogs, item)
+	return toPublicNotificationEvent(item)
+}
+
+func (s *memoryStore) appendAudit(actorUserID, actorRole, action, targetType, targetID string, details map[string]string) publicAuditLog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := fmt.Sprintf("AUD%04d", s.nextAuditID)
+	s.nextAuditID++
+	item := auditLog{
+		ID:          id,
+		ActorUserID: strings.TrimSpace(actorUserID),
+		ActorRole:   strings.TrimSpace(strings.ToLower(actorRole)),
+		Action:      strings.TrimSpace(strings.ToLower(action)),
+		TargetType:  strings.TrimSpace(strings.ToLower(targetType)),
+		TargetID:    strings.TrimSpace(targetID),
+		Details:     cloneStringMap(details),
+		CreatedAt:   nowISO(),
+	}
+	s.auditLogs = append(s.auditLogs, item)
+	return toPublicAuditLog(item)
+}
+
+func (s *memoryStore) listNotifications(orderID string) []publicNotificationEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filterOrderID := strings.TrimSpace(orderID)
+	items := make([]publicNotificationEvent, 0, len(s.notificationLogs))
+	for _, item := range s.notificationLogs {
+		if filterOrderID != "" && item.OrderID != filterOrderID {
+			continue
+		}
+		items = append(items, toPublicNotificationEvent(item))
+	}
+	return items
+}
+
+func (s *memoryStore) listAuditLogs(orderID string) []publicAuditLog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filterOrderID := strings.TrimSpace(orderID)
+	items := make([]publicAuditLog, 0, len(s.auditLogs))
+	for _, item := range s.auditLogs {
+		if filterOrderID != "" {
+			detailsOrderID := ""
+			if item.Details != nil {
+				detailsOrderID = strings.TrimSpace(item.Details["order_id"])
+			}
+			if !(item.TargetType == "order" && item.TargetID == filterOrderID) && detailsOrderID != filterOrderID {
+				continue
+			}
+		}
+		items = append(items, toPublicAuditLog(item))
+	}
+	return items
+}
+
 func toPublicUser(item user) publicUser {
 	return publicUser{
 		ID:        item.ID,
@@ -1064,6 +1183,40 @@ func toPublicRefund(item refund) publicRefund {
 		CreatedAt:   item.CreatedAt,
 		UpdatedAt:   item.UpdatedAt,
 	}
+}
+
+func toPublicNotificationEvent(item notificationEvent) publicNotificationEvent {
+	return publicNotificationEvent{
+		ID:        item.ID,
+		EventType: item.EventType,
+		OrderID:   item.OrderID,
+		Payload:   cloneStringMap(item.Payload),
+		CreatedAt: item.CreatedAt,
+	}
+}
+
+func toPublicAuditLog(item auditLog) publicAuditLog {
+	return publicAuditLog{
+		ID:          item.ID,
+		ActorUserID: item.ActorUserID,
+		ActorRole:   item.ActorRole,
+		Action:      item.Action,
+		TargetType:  item.TargetType,
+		TargetID:    item.TargetID,
+		Details:     cloneStringMap(item.Details),
+		CreatedAt:   item.CreatedAt,
+	}
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return map[string]string{}
+	}
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
 }
 
 func isValidOrderTransition(currentStatus, nextStatus string) bool {

@@ -34,9 +34,13 @@
   - 已支付订单的管理员发货
   - 买家/管理员物流轨迹查询
   - 买家确认收货与退款申请/查询
+- A008 基线：
+  - 订单/支付/发货/退款核心事件通知触发
+  - 核心交易动作审计日志记录
+  - 管理员按订单维度追踪查询
 - `healthz` 健康检查
 - 内存存储（用于快速启动）
-- Go 单元测试覆盖鉴权、RBAC、商品目录、订单支付履约流程
+- Go 单元测试覆盖鉴权、RBAC、商品目录、订单支付履约与审计流程
 
 ## 目录结构
 
@@ -93,6 +97,8 @@ go run .
 - `POST /api/v1/orders/{id}/confirm-delivery`（需要 Bearer access token）
 - `POST /api/v1/orders/{id}/refunds`（需要 Bearer access token）
 - `GET /api/v1/orders/{id}/refunds`（需要 Bearer access token）
+- `GET /api/v1/admin/notifications/events`（需要 admin token，支持 `order_id` 查询参数）
+- `GET /api/v1/admin/audit/logs`（需要 admin token，支持 `order_id` 查询参数）
 
 ## 运行测试
 
