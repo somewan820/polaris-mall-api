@@ -49,6 +49,26 @@ type publicProduct struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
+type publicCartItem struct {
+	ProductID      string `json:"product_id"`
+	Name           string `json:"name"`
+	PriceCents     int    `json:"price_cents"`
+	Quantity       int    `json:"quantity"`
+	LineTotalCents int    `json:"line_total_cents"`
+	Stock          int    `json:"stock"`
+}
+
+type publicCartSummary struct {
+	TotalItems       int `json:"total_items"`
+	TotalQuantity    int `json:"total_quantity"`
+	TotalAmountCents int `json:"total_amount_cents"`
+}
+
+type publicCartPayload struct {
+	Items   []publicCartItem  `json:"items"`
+	Summary publicCartSummary `json:"summary"`
+}
+
 type refreshSession struct {
 	UserID    string
 	ExpiresAt int64
@@ -66,6 +86,7 @@ type memoryStore struct {
 
 	productsByID map[string]product
 	refreshByJTI map[string]refreshSession
+	cartsByUser  map[string]map[string]int
 }
 
 func newMemoryStore() *memoryStore {
@@ -76,6 +97,7 @@ func newMemoryStore() *memoryStore {
 		usersByID:     map[string]user{},
 		productsByID:  map[string]product{},
 		refreshByJTI:  map[string]refreshSession{},
+		cartsByUser:   map[string]map[string]int{},
 	}
 }
 
@@ -286,6 +308,109 @@ func (s *memoryStore) getProduct(productID string) (publicProduct, bool) {
 	return toPublicProduct(item), true
 }
 
+func (s *memoryStore) setCartItem(userID, productID string, quantity int) (publicCartPayload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(productID) == "" {
+		return publicCartPayload{}, fmt.Errorf("product_id is required")
+	}
+	if quantity <= 0 {
+		return publicCartPayload{}, fmt.Errorf("quantity must be greater than zero")
+	}
+
+	item, exists := s.productsByID[productID]
+	if !exists || item.ShelfStatus != "online" {
+		return publicCartPayload{}, fmt.Errorf("product is not available")
+	}
+	if quantity > item.Stock {
+		return publicCartPayload{}, fmt.Errorf("quantity exceeds stock")
+	}
+
+	cart, ok := s.cartsByUser[userID]
+	if !ok {
+		cart = map[string]int{}
+		s.cartsByUser[userID] = cart
+	}
+	cart[productID] = quantity
+	return s.getCartLocked(userID), nil
+}
+
+func (s *memoryStore) removeCartItem(userID, productID string) (publicCartPayload, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cart, ok := s.cartsByUser[userID]
+	if !ok {
+		return s.getCartLocked(userID), false
+	}
+	_, exists := cart[productID]
+	if !exists {
+		return s.getCartLocked(userID), false
+	}
+	delete(cart, productID)
+	if len(cart) == 0 {
+		delete(s.cartsByUser, userID)
+	}
+	return s.getCartLocked(userID), true
+}
+
+func (s *memoryStore) getCart(userID string) publicCartPayload {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getCartLocked(userID)
+}
+
+func (s *memoryStore) getCartLocked(userID string) publicCartPayload {
+	cart, ok := s.cartsByUser[userID]
+	if !ok {
+		return publicCartPayload{
+			Items: []publicCartItem{},
+			Summary: publicCartSummary{
+				TotalItems:       0,
+				TotalQuantity:    0,
+				TotalAmountCents: 0,
+			},
+		}
+	}
+
+	items := make([]publicCartItem, 0, len(cart))
+	totalQuantity := 0
+	totalAmount := 0
+
+	for productID, quantity := range cart {
+		item, exists := s.productsByID[productID]
+		if !exists || item.ShelfStatus != "online" || quantity <= 0 {
+			continue
+		}
+		if quantity > item.Stock {
+			quantity = item.Stock
+			cart[productID] = quantity
+		}
+		lineTotal := item.PriceCents * quantity
+		items = append(items, publicCartItem{
+			ProductID:      item.ID,
+			Name:           item.Name,
+			PriceCents:     item.PriceCents,
+			Quantity:       quantity,
+			LineTotalCents: lineTotal,
+			Stock:          item.Stock,
+		})
+		totalQuantity += quantity
+		totalAmount += lineTotal
+	}
+
+	sortCartItems(items)
+	return publicCartPayload{
+		Items: items,
+		Summary: publicCartSummary{
+			TotalItems:       len(items),
+			TotalQuantity:    totalQuantity,
+			TotalAmountCents: totalAmount,
+		},
+	}
+}
+
 func toPublicUser(item user) publicUser {
 	return publicUser{
 		ID:        item.ID,
@@ -353,6 +478,16 @@ func sortPublicProducts(items []publicProduct) {
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {
 			if items[j].ID < items[i].ID {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+}
+
+func sortCartItems(items []publicCartItem) {
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j].ProductID < items[i].ProductID {
 				items[i], items[j] = items[j], items[i]
 			}
 		}

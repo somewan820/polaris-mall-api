@@ -33,6 +33,15 @@ type authRefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+type cartSetRequest struct {
+	ProductID string `json:"product_id"`
+	Quantity  int    `json:"quantity"`
+}
+
+type cartUpdateRequest struct {
+	Quantity int `json:"quantity"`
+}
+
 type createProductInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -92,6 +101,21 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/admin/ping":
 		s.handleAdminPing(writer, request)
+		return
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/cart":
+		s.handleCartQuery(writer, request)
+		return
+	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/cart/summary":
+		s.handleCartQuery(writer, request)
+		return
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/cart/items":
+		s.handleCartAdd(writer, request)
+		return
+	case request.Method == http.MethodPatch && strings.HasPrefix(request.URL.Path, "/api/v1/cart/items/"):
+		s.handleCartUpdate(writer, request)
+		return
+	case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/v1/cart/items/"):
+		s.handleCartDelete(writer, request)
 		return
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/products":
 		s.handleListProducts(writer)
@@ -238,6 +262,94 @@ func (s *Server) handleAdminPing(writer http.ResponseWriter, request *http.Reque
 func (s *Server) handleListProducts(writer http.ResponseWriter) {
 	items := s.store.listProducts(false)
 	s.writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleCartQuery(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	cart := s.store.getCart(user.ID)
+	s.writeJSON(writer, http.StatusOK, cart)
+}
+
+func (s *Server) handleCartAdd(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	var body cartSetRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	cart, err := s.store.setCartItem(user.ID, body.ProductID, body.Quantity)
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "CART_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, cart)
+}
+
+func (s *Server) handleCartUpdate(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	productID := strings.TrimPrefix(request.URL.Path, "/api/v1/cart/items/")
+	if productID == "" || strings.Contains(productID, "/") {
+		s.writeError(writer, http.StatusNotFound, "CART_ITEM_NOT_FOUND", "Cart item not found")
+		return
+	}
+	var body cartUpdateRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	cart, err := s.store.setCartItem(user.ID, productID, body.Quantity)
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "CART_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, cart)
+}
+
+func (s *Server) handleCartDelete(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	productID := strings.TrimPrefix(request.URL.Path, "/api/v1/cart/items/")
+	if productID == "" || strings.Contains(productID, "/") {
+		s.writeError(writer, http.StatusNotFound, "CART_ITEM_NOT_FOUND", "Cart item not found")
+		return
+	}
+	cart, exists := s.store.removeCartItem(user.ID, productID)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "CART_ITEM_NOT_FOUND", "Cart item not found")
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, cart)
 }
 
 func (s *Server) handleGetProduct(writer http.ResponseWriter, request *http.Request) {

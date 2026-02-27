@@ -192,6 +192,109 @@ func TestCatalogAdminCreateAndPublicFilter(t *testing.T) {
 	}
 }
 
+func TestCartAddUpdateRemoveAndSummary(t *testing.T) {
+	srv := New("test-secret")
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "cart-admin@example.com",
+		"password": "admin-pass",
+		"role":     "admin",
+	}, "")
+	adminLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "cart-admin@example.com",
+		"password": "admin-pass",
+	}, "")
+	adminToken := toString(adminLogin.Body["access_token"])
+
+	createProduct := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"name":         "Cart Product",
+		"description":  "Used in cart tests",
+		"price_cents":  1000,
+		"stock":        5,
+		"category":     "demo",
+		"shelf_status": "online",
+	}, adminToken)
+	if createProduct.Status != http.StatusCreated {
+		t.Fatalf("create product status = %d, want %d", createProduct.Status, http.StatusCreated)
+	}
+	productID := toString(createProduct.Body["item"].(map[string]any)["id"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "buyer-cart@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	buyerLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "buyer-cart@example.com",
+		"password": "buyer-pass",
+	}, "")
+	buyerToken := toString(buyerLogin.Body["access_token"])
+
+	addResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   2,
+	}, buyerToken)
+	if addResp.Status != http.StatusOK {
+		t.Fatalf("add cart status = %d, want %d", addResp.Status, http.StatusOK)
+	}
+	addSummary := addResp.Body["summary"].(map[string]any)
+	if toInt(addSummary["total_quantity"]) != 2 {
+		t.Fatalf("cart total quantity = %d, want 2", toInt(addSummary["total_quantity"]))
+	}
+
+	getResp := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/cart", nil, buyerToken)
+	if getResp.Status != http.StatusOK {
+		t.Fatalf("get cart status = %d, want %d", getResp.Status, http.StatusOK)
+	}
+	items := getResp.Body["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("cart items len = %d, want 1", len(items))
+	}
+	first := items[0].(map[string]any)
+	if toInt(first["quantity"]) != 2 {
+		t.Fatalf("item quantity = %d, want 2", toInt(first["quantity"]))
+	}
+
+	updateResp := callJSON(t, httpSrv.URL, http.MethodPatch, "/api/v1/cart/items/"+productID, map[string]any{
+		"quantity": 4,
+	}, buyerToken)
+	if updateResp.Status != http.StatusOK {
+		t.Fatalf("update cart status = %d, want %d", updateResp.Status, http.StatusOK)
+	}
+	updateSummary := updateResp.Body["summary"].(map[string]any)
+	if toInt(updateSummary["total_quantity"]) != 4 {
+		t.Fatalf("updated total quantity = %d, want 4", toInt(updateSummary["total_quantity"]))
+	}
+
+	overStockResp := callJSON(t, httpSrv.URL, http.MethodPatch, "/api/v1/cart/items/"+productID, map[string]any{
+		"quantity": 99,
+	}, buyerToken)
+	if overStockResp.Status != http.StatusBadRequest {
+		t.Fatalf("over stock status = %d, want %d", overStockResp.Status, http.StatusBadRequest)
+	}
+
+	deleteResp := callJSON(t, httpSrv.URL, http.MethodDelete, "/api/v1/cart/items/"+productID, nil, buyerToken)
+	if deleteResp.Status != http.StatusOK {
+		t.Fatalf("delete cart status = %d, want %d", deleteResp.Status, http.StatusOK)
+	}
+
+	summaryResp := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/cart/summary", nil, buyerToken)
+	if summaryResp.Status != http.StatusOK {
+		t.Fatalf("summary status = %d, want %d", summaryResp.Status, http.StatusOK)
+	}
+	summary := summaryResp.Body["summary"].(map[string]any)
+	if toInt(summary["total_quantity"]) != 0 {
+		t.Fatalf("summary total quantity = %d, want 0", toInt(summary["total_quantity"]))
+	}
+
+	noTokenResp := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/cart", nil, "")
+	if noTokenResp.Status != http.StatusUnauthorized {
+		t.Fatalf("no token status = %d, want %d", noTokenResp.Status, http.StatusUnauthorized)
+	}
+}
+
 func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any, bearerToken string) testResponse {
 	t.Helper()
 	var bodyBytes []byte
@@ -233,4 +336,15 @@ func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any
 func toString(value any) string {
 	text, _ := value.(string)
 	return text
+}
+
+func toInt(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	default:
+		return 0
+	}
 }

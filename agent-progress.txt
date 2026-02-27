@@ -18,3 +18,7 @@
 - type: feature_pass
 - note: Marked A002 as passing. Evidence: Go catalog endpoints implemented (public/admin) and verified by go test (internal/server).
 
+## 2026-02-27T06:27:26Z
+- type: feature_pass
+- note: Marked A003 as passing. Evidence: Go购物车接口（增删改查/汇总）已实现，go test ./... 通过。
+

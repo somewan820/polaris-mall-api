@@ -31,9 +31,11 @@
   }, 
   {
     "category": "cart", 
-    "passes": false, 
+    "passes": true, 
     "description": "Implement cart add, update, remove, and cart query APIs for authenticated users", 
     "notes": "Acceptance: cart reflects latest valid items and quantities. Dependencies: A001, A002.", 
+    "updated_at": "2026-02-27T06:27:26Z", 
+    "evidence": "Go\u8d2d\u7269\u8f66\u63a5\u53e3\uff08\u589e\u5220\u6539\u67e5/\u6c47\u603b\uff09\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002", 
     "priority": 3, 
     "steps": [
       "Create per-user cart item model and constraints", 

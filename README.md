@@ -1,5 +1,7 @@
 # Polaris Mall API
 
+Language: English | [中文](README.zh-CN.md)
+
 `polaris-mall-api` contains the Go backend baseline for the first MVP slice.
 
 ## Implemented In This Step
@@ -13,6 +15,9 @@
 - A002 baseline:
   - product list and detail
   - admin product create and update
+- A003 baseline:
+  - cart add, update, remove, and query
+  - cart summary for checkout pre-calculation
 - health endpoint
 - in-memory store for rapid bootstrap
 - Go unit tests for auth, RBAC, and product catalog behavior
@@ -52,6 +57,11 @@ Environment variables:
 - `GET /api/v1/products/{id}`
 - `POST /api/v1/admin/products` (Bearer admin token required)
 - `PATCH /api/v1/admin/products/{id}` (Bearer admin token required)
+- `GET /api/v1/cart` (Bearer access token required)
+- `GET /api/v1/cart/summary` (Bearer access token required)
+- `POST /api/v1/cart/items` (Bearer access token required)
+- `PATCH /api/v1/cart/items/{product_id}` (Bearer access token required)
+- `DELETE /api/v1/cart/items/{product_id}` (Bearer access token required)
 
 ## Run Tests
 
@@ -62,4 +72,3 @@ go test ./...
 Note:
 
 - Go implementation is the active backend baseline.
-- Existing Python scaffold files are retained temporarily for reference during migration.
