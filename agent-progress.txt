@@ -22,3 +22,7 @@
 - type: feature_pass
 - note: Marked A003 as passing. Evidence: Go购物车接口（增删改查/汇总）已实现，go test ./... 通过。
 
+## 2026-02-27T06:32:44Z
+- type: feature_pass
+- note: Marked A004 as passing. Evidence: Go结算试算接口已实现（含运费/优惠扩展与确定性trace_id），go test ./... 通过。
+

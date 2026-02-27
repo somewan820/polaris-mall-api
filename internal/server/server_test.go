@@ -295,6 +295,101 @@ func TestCartAddUpdateRemoveAndSummary(t *testing.T) {
 	}
 }
 
+func TestCheckoutPreviewDeterministicAndCappedDiscount(t *testing.T) {
+	srv := New("test-secret")
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "checkout-admin@example.com",
+		"password": "admin-pass",
+		"role":     "admin",
+	}, "")
+	adminLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "checkout-admin@example.com",
+		"password": "admin-pass",
+	}, "")
+	adminToken := toString(adminLogin.Body["access_token"])
+	createProduct := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"name":         "Checkout Product",
+		"description":  "Used in checkout tests",
+		"price_cents":  1000,
+		"stock":        5,
+		"category":     "demo",
+		"shelf_status": "online",
+	}, adminToken)
+	productID := toString(createProduct.Body["item"].(map[string]any)["id"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "checkout-buyer@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	buyerLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "checkout-buyer@example.com",
+		"password": "buyer-pass",
+	}, "")
+	buyerToken := toString(buyerLogin.Body["access_token"])
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   2,
+	}, buyerToken)
+
+	previewBody := map[string]any{
+		"shipping_cents": 500,
+		"discount_cents": 200,
+		"coupon_code":    "SPRING",
+	}
+	previewA := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/checkout/preview", previewBody, buyerToken)
+	previewB := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/checkout/preview", previewBody, buyerToken)
+	if previewA.Status != http.StatusOK || previewB.Status != http.StatusOK {
+		t.Fatalf("preview status = %d/%d, want %d", previewA.Status, previewB.Status, http.StatusOK)
+	}
+	traceA := toString(previewA.Body["trace_id"])
+	traceB := toString(previewB.Body["trace_id"])
+	if traceA == "" || traceA != traceB {
+		t.Fatalf("trace_id should be deterministic, got %s and %s", traceA, traceB)
+	}
+	pricing := previewA.Body["pricing"].(map[string]any)
+	if toInt(pricing["total_cents"]) != 2300 {
+		t.Fatalf("total_cents = %d, want 2300", toInt(pricing["total_cents"]))
+	}
+
+	capped := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/checkout/preview", map[string]any{
+		"shipping_cents": 500,
+		"discount_cents": 9999,
+		"coupon_code":    "SPRING",
+	}, buyerToken)
+	if capped.Status != http.StatusOK {
+		t.Fatalf("capped preview status = %d, want %d", capped.Status, http.StatusOK)
+	}
+	cappedPricing := capped.Body["pricing"].(map[string]any)
+	if toInt(cappedPricing["discount_cents"]) != 2500 {
+		t.Fatalf("discount_cents = %d, want 2500", toInt(cappedPricing["discount_cents"]))
+	}
+	if toInt(cappedPricing["total_cents"]) != 0 {
+		t.Fatalf("total_cents = %d, want 0", toInt(cappedPricing["total_cents"]))
+	}
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "empty-cart@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	emptyLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "empty-cart@example.com",
+		"password": "buyer-pass",
+	}, "")
+	emptyToken := toString(emptyLogin.Body["access_token"])
+	emptyPreview := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/checkout/preview", map[string]any{
+		"shipping_cents": 0,
+		"discount_cents": 0,
+	}, emptyToken)
+	if emptyPreview.Status != http.StatusBadRequest {
+		t.Fatalf("empty cart preview status = %d, want %d", emptyPreview.Status, http.StatusBadRequest)
+	}
+}
+
 func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any, bearerToken string) testResponse {
 	t.Helper()
 	var bodyBytes []byte

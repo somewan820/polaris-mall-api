@@ -18,6 +18,10 @@ Language: English | [中文](README.zh-CN.md)
 - A003 baseline:
   - cart add, update, remove, and query
   - cart summary for checkout pre-calculation
+- A004 baseline:
+  - checkout pricing preview
+  - shipping and discount extension points
+  - deterministic trace id for same request input
 - health endpoint
 - in-memory store for rapid bootstrap
 - Go unit tests for auth, RBAC, and product catalog behavior
@@ -62,6 +66,7 @@ Environment variables:
 - `POST /api/v1/cart/items` (Bearer access token required)
 - `PATCH /api/v1/cart/items/{product_id}` (Bearer access token required)
 - `DELETE /api/v1/cart/items/{product_id}` (Bearer access token required)
+- `POST /api/v1/checkout/preview` (Bearer access token required)
 
 ## Run Tests
 

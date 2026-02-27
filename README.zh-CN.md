@@ -18,6 +18,10 @@
 - A003 基线：
   - 购物车增删改查
   - 购物车汇总（结算预览）
+- A004 基线：
+  - 结算金额试算
+  - 运费/优惠扩展点
+  - 同输入下稳定输出 trace_id
 - `healthz` 健康检查
 - 内存存储（用于快速启动）
 - Go 单元测试覆盖鉴权、RBAC、商品目录、购物车流程
@@ -62,10 +66,10 @@ go run .
 - `POST /api/v1/cart/items`（需要 Bearer access token）
 - `PATCH /api/v1/cart/items/{product_id}`（需要 Bearer access token）
 - `DELETE /api/v1/cart/items/{product_id}`（需要 Bearer access token）
+- `POST /api/v1/checkout/preview`（需要 Bearer access token）
 
 ## 运行测试
 
 ```powershell
 go test ./...
 ```
-

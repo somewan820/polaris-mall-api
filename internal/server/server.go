@@ -1,7 +1,10 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -40,6 +43,12 @@ type cartSetRequest struct {
 
 type cartUpdateRequest struct {
 	Quantity int `json:"quantity"`
+}
+
+type checkoutPreviewRequest struct {
+	ShippingCents int    `json:"shipping_cents"`
+	DiscountCents int    `json:"discount_cents"`
+	CouponCode    string `json:"coupon_code"`
 }
 
 type createProductInput struct {
@@ -116,6 +125,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/api/v1/cart/items/"):
 		s.handleCartDelete(writer, request)
+		return
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/checkout/preview":
+		s.handleCheckoutPreview(writer, request)
 		return
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/products":
 		s.handleListProducts(writer)
@@ -352,6 +364,57 @@ func (s *Server) handleCartDelete(writer http.ResponseWriter, request *http.Requ
 	s.writeJSON(writer, http.StatusOK, cart)
 }
 
+func (s *Server) handleCheckoutPreview(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+
+	var body checkoutPreviewRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	if body.ShippingCents < 0 || body.DiscountCents < 0 {
+		s.writeError(writer, http.StatusBadRequest, "CHECKOUT_INVALID", "shipping_cents and discount_cents must be non-negative")
+		return
+	}
+
+	cart := s.store.getCart(user.ID)
+	if cart.Summary.TotalItems == 0 {
+		s.writeError(writer, http.StatusBadRequest, "CHECKOUT_EMPTY", "Cart is empty")
+		return
+	}
+
+	subtotal := cart.Summary.TotalAmountCents
+	shipping := body.ShippingCents
+	discount := body.DiscountCents
+	maxDiscount := subtotal + shipping
+	if discount > maxDiscount {
+		discount = maxDiscount
+	}
+	total := subtotal + shipping - discount
+	couponCode := strings.TrimSpace(body.CouponCode)
+
+	s.writeJSON(writer, http.StatusOK, map[string]any{
+		"pricing": map[string]any{
+			"subtotal_cents": subtotal,
+			"shipping_cents": shipping,
+			"discount_cents": discount,
+			"total_cents":    total,
+			"currency":       "CNY",
+		},
+		"cart_summary": cart.Summary,
+		"coupon_code":  couponCode,
+		"trace_id":     checkoutTraceID(user.ID, cart.Items, shipping, discount, couponCode),
+	})
+}
+
 func (s *Server) handleGetProduct(writer http.ResponseWriter, request *http.Request) {
 	productID := strings.TrimPrefix(request.URL.Path, "/api/v1/products/")
 	if productID == "" || strings.Contains(productID, "/") {
@@ -463,4 +526,19 @@ func (s *Server) writeCORS(writer http.ResponseWriter) {
 
 func (s *Server) writeError(writer http.ResponseWriter, status int, code, message string) {
 	s.writeJSON(writer, status, apiErrorEnvelope{Error: apiError{Code: code, Message: message}})
+}
+
+func checkoutTraceID(userID string, items []publicCartItem, shipping, discount int, couponCode string) string {
+	builder := strings.Builder{}
+	builder.WriteString(userID)
+	builder.WriteString("|")
+	for _, item := range items {
+		builder.WriteString(item.ProductID)
+		builder.WriteString(":")
+		builder.WriteString(fmt.Sprintf("%d:%d", item.Quantity, item.PriceCents))
+		builder.WriteString("|")
+	}
+	builder.WriteString(fmt.Sprintf("%d|%d|%s", shipping, discount, couponCode))
+	sum := sha256.Sum256([]byte(builder.String()))
+	return hex.EncodeToString(sum[:])[:20]
 }

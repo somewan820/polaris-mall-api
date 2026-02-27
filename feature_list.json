@@ -46,9 +46,11 @@
   }, 
   {
     "category": "checkout", 
-    "passes": false, 
+    "passes": true, 
     "description": "Implement checkout pricing API including shipping and discount extension points", 
     "notes": "Acceptance: same input returns same total and breakdown. Dependencies: A003.", 
+    "updated_at": "2026-02-27T06:32:44Z", 
+    "evidence": "Go\u7ed3\u7b97\u8bd5\u7b97\u63a5\u53e3\u5df2\u5b9e\u73b0\uff08\u542b\u8fd0\u8d39/\u4f18\u60e0\u6269\u5c55\u4e0e\u786e\u5b9a\u6027trace_id\uff09\uff0cgo test ./... \u901a\u8fc7\u3002", 
     "priority": 4, 
     "steps": [
       "Build order preview request and response contract", 
