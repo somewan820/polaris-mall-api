@@ -106,6 +106,11 @@ Environment variables:
 go test ./...
 ```
 
+## CI/CD Gate
+
+- workflow file: `.github/workflows/api-ci-cd.yml`
+- deploy job runs only on `push` to `main` and only after `gate` success
+
 Note:
 
 - Go implementation is the active backend baseline.

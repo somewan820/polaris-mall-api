@@ -105,3 +105,8 @@ go run .
 ```powershell
 go test ./...
 ```
+
+## CI/CD Gate
+
+- 工作流文件：`.github/workflows/api-ci-cd.yml`
+- 部署任务仅在 `main` 分支 push 且 `gate` 成功后执行
