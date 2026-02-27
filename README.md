@@ -26,6 +26,10 @@ Language: English | [中文](README.zh-CN.md)
   - order creation from cart
   - strict order state-machine transitions
   - timeout close endpoint for pending-payment orders
+- A006 baseline:
+  - payment creation by order
+  - callback signature verification
+  - idempotent callback processing
 - health endpoint
 - in-memory store for rapid bootstrap
 - Go unit tests for auth, RBAC, and product catalog behavior
@@ -52,6 +56,7 @@ Environment variables:
 - `POLARIS_API_HOST` (default `127.0.0.1`)
 - `POLARIS_API_PORT` (default `9000`)
 - `POLARIS_API_TOKEN_SECRET` (default `dev-token-secret`)
+- `POLARIS_PAY_CALLBACK_SECRET` (default `dev-pay-callback-secret`)
 
 ## API Endpoints
 
@@ -76,6 +81,9 @@ Environment variables:
 - `GET /api/v1/orders/{id}` (Bearer access token required)
 - `POST /api/v1/orders/{id}/transitions` (Bearer access token required)
 - `POST /api/v1/admin/orders/close-expired` (Bearer admin token required)
+- `POST /api/v1/payments/create` (Bearer access token required)
+- `GET /api/v1/payments/order/{order_id}` (Bearer access token required)
+- `POST /api/v1/payments/callback/mockpay` (callback signature required via `X-Mockpay-Signature`)
 
 ## Run Tests
 

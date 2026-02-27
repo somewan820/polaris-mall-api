@@ -1,10 +1,12 @@
 package server
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,8 +19,9 @@ var allowedRoles = map[string]bool{
 }
 
 type Server struct {
-	store       *memoryStore
-	tokenSecret string
+	store          *memoryStore
+	tokenSecret    string
+	callbackSecret string
 }
 
 type authRegisterRequest struct {
@@ -59,6 +62,17 @@ type closeExpiredOrdersRequest struct {
 	TimeoutSeconds int64 `json:"timeout_seconds"`
 }
 
+type createPaymentRequest struct {
+	OrderID  string `json:"order_id"`
+	Provider string `json:"provider"`
+}
+
+type paymentCallbackRequest struct {
+	OrderID       string `json:"order_id"`
+	ExternalTxnID string `json:"external_txn_id"`
+	Result        string `json:"result"`
+}
+
 type createProductInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -87,9 +101,14 @@ type apiErrorEnvelope struct {
 }
 
 func New(tokenSecret string) *Server {
+	return NewWithSecrets(tokenSecret, tokenSecret)
+}
+
+func NewWithSecrets(tokenSecret, callbackSecret string) *Server {
 	return &Server{
-		store:       newMemoryStore(),
-		tokenSecret: tokenSecret,
+		store:          newMemoryStore(),
+		tokenSecret:    tokenSecret,
+		callbackSecret: callbackSecret,
 	}
 }
 
@@ -151,6 +170,15 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/admin/orders/close-expired":
 		s.handleCloseExpiredOrders(writer, request)
+		return
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/payments/create":
+		s.handleCreatePayment(writer, request)
+		return
+	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/api/v1/payments/order/"):
+		s.handleGetPayment(writer, request)
+		return
+	case request.Method == http.MethodPost && request.URL.Path == "/api/v1/payments/callback/mockpay":
+		s.handleMockpayCallback(writer, request)
 		return
 	case request.Method == http.MethodGet && request.URL.Path == "/api/v1/products":
 		s.handleListProducts(writer)
@@ -562,6 +590,95 @@ func (s *Server) handleCloseExpiredOrders(writer http.ResponseWriter, request *h
 	})
 }
 
+func (s *Server) handleCreatePayment(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	var body createPaymentRequest
+	if err := s.readJSON(request, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid JSON body")
+		return
+	}
+	payment, exists, err := s.store.createPayment(user.ID, user.Role, body.OrderID, body.Provider)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+	if err != nil {
+		if err.Error() == "forbidden" {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusBadRequest, "PAYMENT_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"payment": payment})
+}
+
+func (s *Server) handleGetPayment(writer http.ResponseWriter, request *http.Request) {
+	user, status, ok := s.authUser(request, "")
+	if !ok {
+		if status == http.StatusForbidden {
+			s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+			return
+		}
+		s.writeError(writer, http.StatusUnauthorized, "AUTH_INVALID", "Access token is invalid or expired")
+		return
+	}
+	orderID := strings.TrimPrefix(request.URL.Path, "/api/v1/payments/order/")
+	if orderID == "" || strings.Contains(orderID, "/") {
+		s.writeError(writer, http.StatusNotFound, "PAYMENT_NOT_FOUND", "Payment not found")
+		return
+	}
+	payment, exists, err := s.store.getPayment(user.ID, user.Role, orderID)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "PAYMENT_NOT_FOUND", "Payment not found")
+		return
+	}
+	if err != nil {
+		s.writeError(writer, http.StatusForbidden, "AUTH_FORBIDDEN", "Insufficient role for this endpoint")
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{"payment": payment})
+}
+
+func (s *Server) handleMockpayCallback(writer http.ResponseWriter, request *http.Request) {
+	rawBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid callback body")
+		return
+	}
+	signature := strings.TrimSpace(request.Header.Get("X-Mockpay-Signature"))
+	if !verifyCallbackSignature(rawBody, s.callbackSecret, signature) {
+		s.writeError(writer, http.StatusUnauthorized, "CALLBACK_INVALID", "Invalid callback signature")
+		return
+	}
+	var body paymentCallbackRequest
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		s.writeError(writer, http.StatusBadRequest, "REQUEST_INVALID", "Invalid callback body")
+		return
+	}
+	payment, exists, idempotent, err := s.store.processPaymentCallback("mockpay", body.OrderID, body.ExternalTxnID, body.Result)
+	if !exists {
+		s.writeError(writer, http.StatusNotFound, "PAYMENT_NOT_FOUND", "Payment not found")
+		return
+	}
+	if err != nil {
+		s.writeError(writer, http.StatusBadRequest, "CALLBACK_INVALID", err.Error())
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, map[string]any{
+		"payment":    payment,
+		"idempotent": idempotent,
+	})
+}
+
 func (s *Server) handleGetProduct(writer http.ResponseWriter, request *http.Request) {
 	productID := strings.TrimPrefix(request.URL.Path, "/api/v1/products/")
 	if productID == "" || strings.Contains(productID, "/") {
@@ -688,4 +805,14 @@ func checkoutTraceID(userID string, items []publicCartItem, shipping, discount i
 	builder.WriteString(fmt.Sprintf("%d|%d|%s", shipping, discount, couponCode))
 	sum := sha256.Sum256([]byte(builder.String()))
 	return hex.EncodeToString(sum[:])[:20]
+}
+
+func verifyCallbackSignature(payload []byte, secret, providedSignature string) bool {
+	if providedSignature == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(strings.ToLower(expected)), []byte(strings.ToLower(providedSignature)))
 }

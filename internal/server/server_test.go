@@ -2,6 +2,9 @@ package server
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -489,6 +492,106 @@ func TestOrderLifecycleAndTimeoutClose(t *testing.T) {
 	}
 }
 
+func TestPaymentCallbackSignatureAndIdempotency(t *testing.T) {
+	callbackSecret := "mockpay-test-secret"
+	srv := NewWithSecrets("test-secret", callbackSecret)
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "pay-admin@example.com",
+		"password": "admin-pass",
+		"role":     "admin",
+	}, "")
+	adminLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "pay-admin@example.com",
+		"password": "admin-pass",
+	}, "")
+	adminToken := toString(adminLogin.Body["access_token"])
+	createProduct := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/admin/products", map[string]any{
+		"name":         "Pay Product",
+		"description":  "Used in payment tests",
+		"price_cents":  1888,
+		"stock":        5,
+		"category":     "demo",
+		"shelf_status": "online",
+	}, adminToken)
+	productID := toString(createProduct.Body["item"].(map[string]any)["id"])
+
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "pay-buyer@example.com",
+		"password": "buyer-pass",
+		"role":     "buyer",
+	}, "")
+	buyerLogin := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/auth/login", map[string]any{
+		"email":    "pay-buyer@example.com",
+		"password": "buyer-pass",
+	}, "")
+	buyerToken := toString(buyerLogin.Body["access_token"])
+	callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/cart/items", map[string]any{
+		"product_id": productID,
+		"quantity":   1,
+	}, buyerToken)
+	orderResp := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/orders", map[string]any{}, buyerToken)
+	orderID := toString(orderResp.Body["order"].(map[string]any)["id"])
+
+	createPayment := callJSON(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/create", map[string]any{
+		"order_id": orderID,
+		"provider": "mockpay",
+	}, buyerToken)
+	if createPayment.Status != http.StatusOK {
+		t.Fatalf("create payment status = %d, want %d", createPayment.Status, http.StatusOK)
+	}
+
+	callbackPayload := map[string]any{
+		"order_id":        orderID,
+		"external_txn_id": "txn-123",
+		"result":          "success",
+	}
+	rawBody, err := json.Marshal(callbackPayload)
+	if err != nil {
+		t.Fatalf("marshal callback payload: %v", err)
+	}
+	signature := signCallback(rawBody, callbackSecret)
+	firstCallback := callRawJSONWithHeaders(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/callback/mockpay", rawBody, map[string]string{
+		"X-Mockpay-Signature": signature,
+		"Content-Type":        "application/json",
+	})
+	if firstCallback.Status != http.StatusOK {
+		t.Fatalf("first callback status = %d, want %d", firstCallback.Status, http.StatusOK)
+	}
+	if firstCallback.Body["idempotent"] != false {
+		t.Fatalf("first callback idempotent should be false")
+	}
+
+	secondCallback := callRawJSONWithHeaders(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/callback/mockpay", rawBody, map[string]string{
+		"X-Mockpay-Signature": signature,
+		"Content-Type":        "application/json",
+	})
+	if secondCallback.Status != http.StatusOK {
+		t.Fatalf("second callback status = %d, want %d", secondCallback.Status, http.StatusOK)
+	}
+	if secondCallback.Body["idempotent"] != true {
+		t.Fatalf("second callback idempotent should be true")
+	}
+
+	orderDetail := callJSON(t, httpSrv.URL, http.MethodGet, "/api/v1/orders/"+orderID, nil, buyerToken)
+	if orderDetail.Status != http.StatusOK {
+		t.Fatalf("order detail status = %d, want %d", orderDetail.Status, http.StatusOK)
+	}
+	if toString(orderDetail.Body["order"].(map[string]any)["status"]) != "paid" {
+		t.Fatalf("order status should be paid")
+	}
+
+	invalidSig := callRawJSONWithHeaders(t, httpSrv.URL, http.MethodPost, "/api/v1/payments/callback/mockpay", rawBody, map[string]string{
+		"X-Mockpay-Signature": "invalid",
+		"Content-Type":        "application/json",
+	})
+	if invalidSig.Status != http.StatusUnauthorized {
+		t.Fatalf("invalid signature status = %d, want %d", invalidSig.Status, http.StatusUnauthorized)
+	}
+}
+
 func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any, bearerToken string) testResponse {
 	t.Helper()
 	var bodyBytes []byte
@@ -527,6 +630,31 @@ func callJSON(t *testing.T, baseURL, method, path string, payload map[string]any
 	}
 }
 
+func callRawJSONWithHeaders(t *testing.T, baseURL, method, path string, rawBody []byte, headers map[string]string) testResponse {
+	t.Helper()
+	request, err := http.NewRequest(method, baseURL+path, bytes.NewReader(rawBody))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer response.Body.Close()
+
+	result := map[string]any{}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		result = map[string]any{}
+	}
+	return testResponse{
+		Status: response.StatusCode,
+		Body:   result,
+	}
+}
+
 func toString(value any) string {
 	text, _ := value.(string)
 	return text
@@ -541,4 +669,10 @@ func toInt(value any) int {
 	default:
 		return 0
 	}
+}
+
+func signCallback(payload []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
 }

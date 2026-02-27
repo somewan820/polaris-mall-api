@@ -26,6 +26,10 @@
   - 从购物车创建订单
   - 严格订单状态机流转
   - 待支付订单超时关单接口
+- A006 基线：
+  - 基于订单创建支付单
+  - 回调签名验签
+  - 重复回调幂等处理
 - `healthz` 健康检查
 - 内存存储（用于快速启动）
 - Go 单元测试覆盖鉴权、RBAC、商品目录、购物车流程
@@ -52,6 +56,7 @@ go run .
 - `POLARIS_API_HOST`（默认 `127.0.0.1`）
 - `POLARIS_API_PORT`（默认 `9000`）
 - `POLARIS_API_TOKEN_SECRET`（默认 `dev-token-secret`）
+- `POLARIS_PAY_CALLBACK_SECRET`（默认 `dev-pay-callback-secret`）
 
 ## 接口列表
 
@@ -76,6 +81,9 @@ go run .
 - `GET /api/v1/orders/{id}`（需要 Bearer access token）
 - `POST /api/v1/orders/{id}/transitions`（需要 Bearer access token）
 - `POST /api/v1/admin/orders/close-expired`（需要 admin token）
+- `POST /api/v1/payments/create`（需要 Bearer access token）
+- `GET /api/v1/payments/order/{order_id}`（需要 Bearer access token）
+- `POST /api/v1/payments/callback/mockpay`（需在 `X-Mockpay-Signature` 传入签名）
 
 ## 运行测试
 

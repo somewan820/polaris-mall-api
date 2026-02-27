@@ -30,3 +30,7 @@
 - type: feature_pass
 - note: Marked A005 as passing. Evidence: Go订单创建/状态机/超时关单接口已实现，go test ./... 通过。
 
+## 2026-02-27T06:41:28Z
+- type: feature_pass
+- note: Marked A006 as passing. Evidence: 支付单创建、回调签名验签与幂等处理已实现，go test ./... 通过。
+

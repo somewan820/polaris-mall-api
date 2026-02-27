@@ -106,6 +106,30 @@ type publicOrder struct {
 	UpdatedAt  string            `json:"updated_at"`
 }
 
+type payment struct {
+	ID            string
+	OrderID       string
+	UserID        string
+	Provider      string
+	Status        string
+	AmountCents   int
+	ExternalTxnID string
+	CreatedAt     string
+	UpdatedAt     string
+}
+
+type publicPayment struct {
+	ID            string `json:"id"`
+	OrderID       string `json:"order_id"`
+	UserID        string `json:"user_id"`
+	Provider      string `json:"provider"`
+	Status        string `json:"status"`
+	AmountCents   int    `json:"amount_cents"`
+	ExternalTxnID string `json:"external_txn_id"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
 type refreshSession struct {
 	UserID    string
 	ExpiresAt int64
@@ -118,6 +142,7 @@ type memoryStore struct {
 	nextUserID    int
 	nextProductID int
 	nextOrderID   int
+	nextPaymentID int
 
 	usersByEmail map[string]user
 	usersByID    map[string]user
@@ -127,6 +152,8 @@ type memoryStore struct {
 	cartsByUser    map[string]map[string]int
 	ordersByID     map[string]order
 	orderIDsByUser map[string][]string
+	paymentsByID   map[string]payment
+	paymentByOrder map[string]string
 }
 
 func newMemoryStore() *memoryStore {
@@ -134,6 +161,7 @@ func newMemoryStore() *memoryStore {
 		nextUserID:     1,
 		nextProductID:  1,
 		nextOrderID:    1,
+		nextPaymentID:  1,
 		usersByEmail:   map[string]user{},
 		usersByID:      map[string]user{},
 		productsByID:   map[string]product{},
@@ -141,6 +169,8 @@ func newMemoryStore() *memoryStore {
 		cartsByUser:    map[string]map[string]int{},
 		ordersByID:     map[string]order{},
 		orderIDsByUser: map[string][]string{},
+		paymentsByID:   map[string]payment{},
+		paymentByOrder: map[string]string{},
 	}
 }
 
@@ -580,6 +610,125 @@ func (s *memoryStore) closeExpiredPendingOrders(timeoutSeconds, nowTs int64) []s
 	return closed
 }
 
+func (s *memoryStore) createPayment(actorUserID, actorRole, orderID, provider string) (publicPayment, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicPayment{}, false, nil
+	}
+	if actorRole != "admin" && orderItem.UserID != actorUserID {
+		return publicPayment{}, true, fmt.Errorf("forbidden")
+	}
+	if orderItem.Status != "pending_payment" {
+		return publicPayment{}, true, fmt.Errorf("order is not pending payment")
+	}
+	cleanProvider := strings.TrimSpace(strings.ToLower(provider))
+	if cleanProvider == "" {
+		cleanProvider = "mockpay"
+	}
+
+	if paymentID, found := s.paymentByOrder[orderID]; found {
+		existing := s.paymentsByID[paymentID]
+		return toPublicPayment(existing), true, nil
+	}
+
+	id := fmt.Sprintf("PAY%04d", s.nextPaymentID)
+	s.nextPaymentID++
+	now := nowISO()
+	entity := payment{
+		ID:            id,
+		OrderID:       orderID,
+		UserID:        orderItem.UserID,
+		Provider:      cleanProvider,
+		Status:        "pending",
+		AmountCents:   orderItem.TotalCents,
+		ExternalTxnID: "",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	s.paymentsByID[id] = entity
+	s.paymentByOrder[orderID] = id
+	return toPublicPayment(entity), true, nil
+}
+
+func (s *memoryStore) getPayment(actorUserID, actorRole, orderID string) (publicPayment, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	orderItem, exists := s.ordersByID[orderID]
+	if !exists {
+		return publicPayment{}, false, nil
+	}
+	if actorRole != "admin" && orderItem.UserID != actorUserID {
+		return publicPayment{}, true, fmt.Errorf("forbidden")
+	}
+	paymentID, found := s.paymentByOrder[orderID]
+	if !found {
+		return publicPayment{}, false, nil
+	}
+	entity := s.paymentsByID[paymentID]
+	return toPublicPayment(entity), true, nil
+}
+
+func (s *memoryStore) processPaymentCallback(provider, orderID, externalTxnID, result string) (publicPayment, bool, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	paymentID, exists := s.paymentByOrder[orderID]
+	if !exists {
+		return publicPayment{}, false, false, nil
+	}
+	entity := s.paymentsByID[paymentID]
+	orderItem, orderExists := s.ordersByID[orderID]
+	if !orderExists {
+		return publicPayment{}, false, false, nil
+	}
+	if strings.TrimSpace(strings.ToLower(provider)) != entity.Provider {
+		return publicPayment{}, true, false, fmt.Errorf("provider mismatch")
+	}
+
+	cleanResult := strings.TrimSpace(strings.ToLower(result))
+	if cleanResult != "success" && cleanResult != "failed" {
+		return publicPayment{}, true, false, fmt.Errorf("invalid callback result")
+	}
+
+	idempotent := false
+	if cleanResult == "success" {
+		if entity.Status == "succeeded" {
+			idempotent = true
+		} else {
+			entity.Status = "succeeded"
+			entity.ExternalTxnID = strings.TrimSpace(externalTxnID)
+			entity.UpdatedAt = nowISO()
+			s.paymentsByID[paymentID] = entity
+		}
+		if orderItem.Status == "pending_payment" {
+			orderItem.Status = "paid"
+			orderItem.UpdatedAt = nowISO()
+			s.ordersByID[orderID] = orderItem
+		} else if orderItem.Status == "paid" {
+			idempotent = true
+		}
+		return toPublicPayment(entity), true, idempotent, nil
+	}
+
+	if entity.Status == "succeeded" {
+		idempotent = true
+		return toPublicPayment(entity), true, idempotent, nil
+	}
+	if entity.Status == "failed" {
+		idempotent = true
+		return toPublicPayment(entity), true, idempotent, nil
+	}
+	entity.Status = "failed"
+	entity.ExternalTxnID = strings.TrimSpace(externalTxnID)
+	entity.UpdatedAt = nowISO()
+	s.paymentsByID[paymentID] = entity
+	return toPublicPayment(entity), true, idempotent, nil
+}
+
 func toPublicUser(item user) publicUser {
 	return publicUser{
 		ID:        item.ID,
@@ -682,6 +831,20 @@ func toPublicOrder(item order) publicOrder {
 		Items:      publicItems,
 		CreatedAt:  item.CreatedAt,
 		UpdatedAt:  item.UpdatedAt,
+	}
+}
+
+func toPublicPayment(item payment) publicPayment {
+	return publicPayment{
+		ID:            item.ID,
+		OrderID:       item.OrderID,
+		UserID:        item.UserID,
+		Provider:      item.Provider,
+		Status:        item.Status,
+		AmountCents:   item.AmountCents,
+		ExternalTxnID: item.ExternalTxnID,
+		CreatedAt:     item.CreatedAt,
+		UpdatedAt:     item.UpdatedAt,
 	}
 }
 

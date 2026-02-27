@@ -12,9 +12,10 @@ func main() {
 	host := getenv("POLARIS_API_HOST", "127.0.0.1")
 	port := getenv("POLARIS_API_PORT", "9000")
 	secret := getenv("POLARIS_API_TOKEN_SECRET", "dev-token-secret")
+	callbackSecret := getenv("POLARIS_PAY_CALLBACK_SECRET", "dev-pay-callback-secret")
 
 	addr := host + ":" + port
-	handler := server.New(secret)
+	handler := server.NewWithSecrets(secret, callbackSecret)
 
 	log.Printf("Polaris API listening on http://%s", addr)
 	if err := http.ListenAndServe(addr, handler); err != nil {

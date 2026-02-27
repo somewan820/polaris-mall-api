@@ -76,9 +76,11 @@
   }, 
   {
     "category": "payment", 
-    "passes": false, 
+    "passes": true, 
     "description": "Integrate one payment provider with callback signature check and idempotent update logic", 
     "notes": "Acceptance: duplicate callback does not duplicate state update. Dependencies: A005, I003, I004.", 
+    "updated_at": "2026-02-27T06:41:28Z", 
+    "evidence": "\u652f\u4ed8\u5355\u521b\u5efa\u3001\u56de\u8c03\u7b7e\u540d\u9a8c\u7b7e\u4e0e\u5e42\u7b49\u5904\u7406\u5df2\u5b9e\u73b0\uff0cgo test ./... \u901a\u8fc7\u3002", 
     "priority": 6, 
     "steps": [
       "Create payment order record and status fields", 
